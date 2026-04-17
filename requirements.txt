@@ -1,4 +1,7 @@
 streamlit
 pandas
 pyarrow
+altair
+reportlab
 gdown
+openpyxl
