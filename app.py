@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 import pandas as pd
 import streamlit as st
@@ -9,17 +8,18 @@ st.set_page_config(page_title="Candidate Connect", layout="wide")
 DRIVE_FILE_ID = "102YgV6ev74B_FutPsO1SIwUcyjZtETWa"
 LOCAL_PARQUET = Path("/tmp/candidate_connect_data.parquet")
 
-@st.cache_data(show_spinner=True)
+@st.cache_resource(show_spinner=True)
 def load_data():
     url = f"https://drive.google.com/uc?id={DRIVE_FILE_ID}"
-    # remove old file if exists
-    if LOCAL_PARQUET.exists():
-        LOCAL_PARQUET.unlink()
-    # download without 'fuzzy' (older gdown compatibility)
-    gdown.download(url=url, output=str(LOCAL_PARQUET), quiet=False)
+
+    # Only download once if the file is already present
+    if not LOCAL_PARQUET.exists() or LOCAL_PARQUET.stat().st_size == 0:
+        gdown.download(url=url, output=str(LOCAL_PARQUET), quiet=False)
+
     if not LOCAL_PARQUET.exists() or LOCAL_PARQUET.stat().st_size == 0:
         st.error("Google Drive download failed. Check sharing settings.")
         st.stop()
+
     return pd.read_parquet(LOCAL_PARQUET)
 
 st.title("Candidate Connect")
