@@ -12,11 +12,13 @@ LOCAL_PARQUET = Path("/tmp/candidate_connect_data.parquet")
 @st.cache_data(show_spinner=True)
 def load_data():
     url = f"https://drive.google.com/uc?id={DRIVE_FILE_ID}"
+    # remove old file if exists
     if LOCAL_PARQUET.exists():
         LOCAL_PARQUET.unlink()
-    gdown.download(url=url, output=str(LOCAL_PARQUET), quiet=False, fuzzy=True)
+    # download without 'fuzzy' (older gdown compatibility)
+    gdown.download(url=url, output=str(LOCAL_PARQUET), quiet=False)
     if not LOCAL_PARQUET.exists() or LOCAL_PARQUET.stat().st_size == 0:
-        st.error("Google Drive download failed. Please re-check the file link and sharing settings.")
+        st.error("Google Drive download failed. Check sharing settings.")
         st.stop()
     return pd.read_parquet(LOCAL_PARQUET)
 
