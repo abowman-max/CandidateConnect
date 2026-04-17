@@ -1,0 +1,7 @@
+streamlit
+pandas
+pyarrow
+reportlab
+altair
+openpyxl
+requests
