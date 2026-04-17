@@ -4,6 +4,7 @@ from __future__ import annotations
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime
+import requests
 import base64
 import json
 import re
