@@ -471,7 +471,7 @@ with st.sidebar:
     st.header("Filters")
     st.markdown('<div class="sidebar-note">Expanded filter set from the desktop version is being restored in stages.</div>', unsafe_allow_html=True)
 
-    with st.expander("Geography", expanded=True):
+    with st.expander("Geography", expanded=False):
         geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in df.columns]
         geo_selections = {}
         for col in geo_cols:
@@ -479,15 +479,15 @@ with st.sidebar:
             vals = sorted([v for v in vals.unique().tolist() if v != ""])
             geo_selections[col] = st.multiselect(col, vals)
 
-    with st.expander("Voter Details", expanded=True):
+    with st.expander("Voter Details", expanded=False):
         party_vals = sorted([v for v in df["Party"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "Party" in df.columns else []
         gender_vals = sorted([v for v in df["_Gender"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
         age_range_vals = sorted([v for v in df["_AgeRange"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
         hh_party_vals = sorted([v for v in df["HH-Party"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "HH-Party" in df.columns else []
         calc_party_vals = sorted([v for v in df["CalculatedParty"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "CalculatedParty" in df.columns else []
         party_pick = st.multiselect("Party", party_vals) if party_vals else []
-        hh_party_pick = st.multiselect("Household Party (HH-Party)", hh_party_vals) if hh_party_vals else []
-        calc_party_pick = st.multiselect("Calculated Party (CalculatedParty)", calc_party_vals) if calc_party_vals else []
+        hh_party_pick = st.multiselect("Household Party", hh_party_vals) if hh_party_vals else []
+        calc_party_pick = st.multiselect("Calculated Party", calc_party_vals) if calc_party_vals else []
         gender_pick = st.multiselect("Gender", gender_vals) if gender_vals else []
         age_range_pick = st.multiselect("Age Range", age_range_vals) if age_range_vals else []
         age_slider = None
@@ -500,26 +500,34 @@ with st.sidebar:
         new_reg_vals = sorted([v for v in df["_NewReg"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
         vote_history_vals = sorted([v for v in df["_VoteHistory"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
         vh_cols = [c for c in df.columns if str(c).endswith("_VH")]
-        selected_vh_col = st.selectbox("Vote History by Election Field", ["(None)"] + vh_cols)
+        
+        vh_cols = [c for c in df.columns if str(c).endswith("_VH")]
+        years = sorted(list(set([c[1:3] for c in vh_cols])))
+        types = sorted(list(set([c[0] for c in vh_cols])))
+
+        vh_year = st.selectbox("Year", ["(Any)"] + years)
+        vh_type = st.selectbox("Election Type", ["(Any)"] + types)
+        vh_method = st.selectbox("Vote Method", ["(Any)", "AP", "MB", "P", "Did Not Vote"])
+
         vh_field_vals = []
         if selected_vh_col != "(None)":
             vh_field_vals = sorted([v for v in df[f"_{selected_vh_col}"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
-        new_reg_pick = st.multiselect("Newly Registered (TAG0003_New_Reg)", new_reg_vals) if new_reg_vals else []
-        vote_history_pick = st.multiselect("Vote History (V4A)", vote_history_vals) if vote_history_vals else []
+        new_reg_pick = st.multiselect("Newly Registered", new_reg_vals) if new_reg_vals else []
+        vote_history_pick = st.multiselect("Vote History", vote_history_vals) if vote_history_vals else []
         vote_history_by_election_pick = st.multiselect("Vote History by Election", vh_field_vals) if vh_field_vals else []
 
     with st.expander("Mail In Ballots", expanded=False):
         mib_perm_vals = sorted([v for v in df["_MBPerm"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
         mib_applied_vals = sorted([v for v in df["_MIBApplied"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
         mib_voted_vals = sorted([v for v in df["_MIBVoted"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
-        mib_perm_pick = st.multiselect("MIB Perm (MB_PERM)", mib_perm_vals) if mib_perm_vals else []
-        mib_applied_pick = st.multiselect("MIB Applied (MIB_Applied)", mib_applied_vals) if mib_applied_vals else []
-        mib_voted_pick = st.multiselect("MIB Voted (MIB_BALLOT)", mib_voted_vals) if mib_voted_vals else []
+        mib_perm_pick = st.multiselect("MIB Perm", mib_perm_vals) if mib_perm_vals else []
+        mib_applied_pick = st.multiselect("MIB Applied", mib_applied_vals) if mib_applied_vals else []
+        mib_voted_pick = st.multiselect("MIB Voted", mib_voted_vals) if mib_voted_vals else []
         mib_prob_slider = None
         if pd.to_numeric(df["_MIBProb"], errors="coerce").notna().any():
             mib_min = float(pd.to_numeric(df["_MIBProb"], errors="coerce").min())
             mib_max = float(pd.to_numeric(df["_MIBProb"], errors="coerce").max())
-            mib_prob_slider = st.slider("MIB Probability Score (MMB_AProp_Score)", mib_min, mib_max, (mib_min, mib_max))
+            mib_prob_slider = st.slider("MIB Probability Score", mib_min, mib_max, (mib_min, mib_max))
 
 
     with st.expander("Tags", expanded=False):
@@ -568,7 +576,24 @@ if new_reg_pick:
     filtered = filtered[filtered["_NewReg"].astype(str).isin(new_reg_pick)]
 if vote_history_pick:
     filtered = filtered[filtered["_VoteHistory"].astype(str).isin(vote_history_pick)]
-if selected_vh_col != "(None)" and vote_history_by_election_pick:
+
+if vh_year != "(Any)" or vh_type != "(Any)" or vh_method != "(Any)":
+    vh_cols = [c for c in filtered.columns if str(c).endswith("_VH")]
+    def match_row(row):
+        for c in vh_cols:
+            val = str(row.get(c,"")).strip().upper()
+            year = c[1:3]
+            typ = c[0]
+            if (vh_year == "(Any)" or year == vh_year) and (vh_type == "(Any)" or typ == vh_type):
+                if vh_method == "(Any)":
+                    return True
+                if vh_method == "Did Not Vote" and val == "":
+                    return True
+                if val == vh_method:
+                    return True
+        return False
+    filtered = filtered[filtered.apply(match_row, axis=1)]
+
     filtered = filtered[filtered[f"_{selected_vh_col}"].astype(str).isin(vote_history_by_election_pick)]
 
 if mib_perm_pick:
