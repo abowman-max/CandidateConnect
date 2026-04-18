@@ -161,8 +161,11 @@ def _simple_yes_no(row: pd.Series, column_candidates: Iterable[str]) -> str:
     col = next((c for c in column_candidates if c in row.index), None)
     if not col:
         return ""
-    value = clean_text(row.get(col, ""))
-    if not value:
+    raw = row.get(col, "")
+    if pd.isna(raw):
+        return ""
+    value = str(raw).strip()
+    if not value or value.lower() in {"nan", "none"}:
         return ""
     value_up = value.upper()
     if value_up in {"Y", "YES", "TRUE", "1", "T"}:
@@ -187,11 +190,13 @@ def _row_to_detail(row: pd.Series) -> Dict[str, str]:
     if party == "O":
         party = "O"
 
-    f_val = _simple_yes_no(row, ["F"])
-    a_val = _simple_yes_no(row, ["A"])
-    u_val = _simple_yes_no(row, ["U"])
+    # F / A / U are display checkboxes only in the report template.
+    # Keep them visually empty unless the dataset later gains explicit values.
+    f_val = ""
+    a_val = ""
+    u_val = ""
     yard = _simple_yes_no(row, ["Yard Sign", "YardSign", "YARD_SIGN"])
-    mb_perm = _simple_yes_no(row, ["MB_Perm", "_MBPerm", "MB_PERM"])
+    mb_perm = _simple_yes_no(row, ["MB_Perm", "MB_PERM", "MB_Pern", "_MBPerm"])
 
     return {
         "Full Name": _full_name_from_row(row),

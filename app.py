@@ -179,7 +179,12 @@ def load_data():
     for c in vm_cols:
         df[f"_{c}"] = normalize_vote_history_value(df[c])
 
-    df["_MBPerm"] = normalize_boolish(df["MB_PERM"]) if "MB_PERM" in df.columns else ""
+    mb_perm_source_col = None
+    for _c in ["MB_Perm", "MB_PERM", "MB_Pern"]:
+        if _c in df.columns:
+            mb_perm_source_col = _c
+            break
+    df["_MBPerm"] = normalize_boolish(df[mb_perm_source_col]) if mb_perm_source_col else ""
     df["_MIBProb"] = pd.to_numeric(df["MMB_AProp_Score"], errors="coerce") if "MMB_AProp_Score" in df.columns else pd.NA
     df["_MIBApplied"] = normalize_boolish(df["MIB_Applied"]) if "MIB_Applied" in df.columns else ""
     df["_MIBVoted"] = normalize_boolish(df["MIB_BALLOT"]) if "MIB_BALLOT" in df.columns else ""
@@ -875,21 +880,37 @@ pdf_col1, pdf_col2, pdf_col3 = st.columns([1.2, 1, 1])
 with pdf_col1:
     st.caption(f"Precincts: {d2d_preview_df['Precinct'].nunique() if 'Precinct' in d2d_preview_df.columns and len(d2d_preview_df) else 0:,} | Rows: {len(d2d_preview_df):,}")
 
+@st.cache_data(show_spinner=False)
+def build_pdf_bytes_cached(filtered_frame: pd.DataFrame, created_date: str, report_title: str, candidate_logo_path: str, tss_logo_path: str) -> bytes:
+    return generate_door_to_door_pdf(
+        filtered=filtered_frame,
+        created_date=created_date,
+        report_title=report_title,
+        candidate_logo_path=candidate_logo_path,
+        tss_logo_path=tss_logo_path,
+    )
+
 with pdf_col2:
-    pdf_bytes = generate_door_to_door_pdf(
-        filtered=filtered,
-        created_date=created_date_text,
-        report_title=pdf_report_title,
-        candidate_logo_path=str(CC_LOGO),
-        tss_logo_path=str(TSS_LOGO),
-    )
-    st.download_button(
-        "Download Door-to-Door PDF",
-        data=pdf_bytes,
-        file_name="candidate_connect_door_to_door_report.pdf",
-        mime="application/pdf",
-        use_container_width=True,
-    )
+    if st.button("Prepare Door-to-Door PDF", use_container_width=True, type="primary"):
+        with st.spinner("Building PDF report..."):
+            st.session_state["door_to_door_pdf_bytes"] = build_pdf_bytes_cached(
+                filtered,
+                created_date_text,
+                pdf_report_title,
+                str(CC_LOGO),
+                str(TSS_LOGO),
+            )
+
+    if "door_to_door_pdf_bytes" in st.session_state:
+        st.download_button(
+            "Download Door-to-Door PDF",
+            data=st.session_state["door_to_door_pdf_bytes"],
+            file_name="candidate_connect_door_to_door_report.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    else:
+        st.caption("Click Prepare Door-to-Door PDF to build the file.")
 
 with pdf_col3:
     d2d_excel = dataframe_to_excel_bytes(d2d_preview_df, "DoorToDoor")
