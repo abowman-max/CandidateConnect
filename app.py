@@ -179,12 +179,7 @@ def load_data():
     for c in vm_cols:
         df[f"_{c}"] = normalize_vote_history_value(df[c])
 
-    mb_perm_source_col = None
-    for _c in ["MB_Perm", "MB_PERM", "MB_Pern"]:
-        if _c in df.columns:
-            mb_perm_source_col = _c
-            break
-    df["_MBPerm"] = normalize_boolish(df[mb_perm_source_col]) if mb_perm_source_col else ""
+    df["_MBPerm"] = normalize_boolish(df["MB_PERM"]) if "MB_PERM" in df.columns else ""
     df["_MIBProb"] = pd.to_numeric(df["MMB_AProp_Score"], errors="coerce") if "MMB_AProp_Score" in df.columns else pd.NA
     df["_MIBApplied"] = normalize_boolish(df["MIB_Applied"]) if "MIB_Applied" in df.columns else ""
     df["_MIBVoted"] = normalize_boolish(df["MIB_BALLOT"]) if "MIB_BALLOT" in df.columns else ""
@@ -449,18 +444,21 @@ def divider():
 cc_logo_uri = img_to_data_uri(CC_LOGO)
 tss_logo_uri = img_to_data_uri(TSS_LOGO)
 
-if "data_ready" not in st.session_state:
-    st.session_state.data_ready = False
+loading_box = st.empty()
+loading_box.markdown('<div class="top-shell"><div class="small-header">Candidate Connect</div><div class="tiny-muted">Web dashboard for filters, charts, and exports</div></div>', unsafe_allow_html=True)
+status_box = st.empty()
+status_box.markdown('<div class="section-card"><div class="small-header loading-banner">Loading data from Google Drive...</div></div>', unsafe_allow_html=True)
 
-df = pd.DataFrame()
-if st.session_state.data_ready:
-    try:
-        df = load_data()
-    except Exception as e:
-        st.error(f"Error loading data: {e}")
-        st.stop()
+try:
+    df = load_data()
+except Exception as e:
+    status_box.empty()
+    st.error(f"Error loading data: {e}")
+    st.stop()
 
-header_rows_text = f"{len(df):,}" if st.session_state.data_ready else "0 (load on demand)"
+loading_box.empty()
+status_box.empty()
+
 header_html = f"""
 <div class="top-shell">
   <div class="brand-grid">
@@ -468,7 +466,7 @@ header_html = f"""
     <div class="brand-center">
       <div class="brand-title">Candidate Connect</div>
       <div class="brand-sub">Voter Data &amp; Engagement Platform</div>
-      <div class="brand-status">Data Source: Google Drive &nbsp;&nbsp;|&nbsp;&nbsp; Last Loaded File: {file_modified_text(LOCAL_PARQUET)} &nbsp;&nbsp;|&nbsp;&nbsp; Rows Available: {header_rows_text}</div>
+      <div class="brand-status">Data Source: Google Drive &nbsp;&nbsp;|&nbsp;&nbsp; Last Loaded File: {file_modified_text(LOCAL_PARQUET)} &nbsp;&nbsp;|&nbsp;&nbsp; Rows Available: {len(df):,}</div>
     </div>
     <div class="brand-right"><div class="powered-by">Powered By</div>{f'<img class="logo-tss" src="{tss_logo_uri}"/>' if tss_logo_uri else ''}</div>
   </div>
@@ -484,173 +482,138 @@ with st.sidebar:
     st.header("Filters")
     st.markdown('<div class="sidebar-note">Expanded filter set from the desktop version is being restored in stages.</div>', unsafe_allow_html=True)
 
-    if not st.session_state.data_ready:
-        st.info("The app now opens first and waits to load voter data until you ask for it.")
-        if st.button("Load Voter Data", use_container_width=True, type="primary"):
-            with st.spinner("Loading voter data from Google Drive..."):
-                try:
-                    _ = load_data()
-                    st.session_state.data_ready = True
-                except Exception as e:
-                    st.error(f"Error loading data: {e}")
-            st.rerun()
-        st.caption("After the data loads once, your filters, counts, exports, and report tools will appear.")
-    else:
-            st.header("Filters")
-            st.markdown('<div class="sidebar-note">Expanded filter set from the desktop version is being restored in stages.</div>', unsafe_allow_html=True)
+    with st.form("filter_form", clear_on_submit=False):
+        with st.expander("Geography", expanded=False):
+            geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in df.columns]
+            geo_selections = {}
+            for col in geo_cols:
+                vals = df[col].dropna().astype(str).str.strip()
+                vals = sorted([v for v in vals.unique().tolist() if v != ""])
+                geo_selections[col] = st.multiselect(col, vals, default=st.session_state.active_filters.get(col, []))
 
-            with st.form("filter_form", clear_on_submit=False):
-                with st.expander("Geography", expanded=False):
-                    geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in df.columns]
-                    geo_selections = {}
-                    for col in geo_cols:
-                        vals = df[col].dropna().astype(str).str.strip()
-                        vals = sorted([v for v in vals.unique().tolist() if v != ""])
-                        geo_selections[col] = st.multiselect(col, vals, default=st.session_state.active_filters.get(col, []))
+        with st.expander("Voter Details", expanded=False):
+            party_vals = sorted([v for v in df["Party"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "Party" in df.columns else []
+            gender_vals = sorted([v for v in df["_Gender"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+            age_range_vals = sorted([v for v in df["_AgeRange"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+            hh_party_vals = sorted([v for v in df["HH-Party"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "HH-Party" in df.columns else []
+            calc_party_vals = sorted([v for v in df["CalculatedParty"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "CalculatedParty" in df.columns else []
 
-                with st.expander("Voter Details", expanded=False):
-                    party_vals = sorted([v for v in df["Party"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "Party" in df.columns else []
-                    gender_vals = sorted([v for v in df["_Gender"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
-                    age_range_vals = sorted([v for v in df["_AgeRange"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
-                    hh_party_vals = sorted([v for v in df["HH-Party"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "HH-Party" in df.columns else []
-                    calc_party_vals = sorted([v for v in df["CalculatedParty"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "CalculatedParty" in df.columns else []
+            party_pick = st.multiselect("Party", party_vals, default=st.session_state.active_filters.get("party_pick", [])) if party_vals else []
+            hh_party_pick = st.multiselect("Household Party", hh_party_vals, default=st.session_state.active_filters.get("hh_party_pick", [])) if hh_party_vals else []
+            calc_party_pick = st.multiselect("Calculated Party", calc_party_vals, default=st.session_state.active_filters.get("calc_party_pick", [])) if calc_party_vals else []
+            gender_pick = st.multiselect("Gender", gender_vals, default=st.session_state.active_filters.get("gender_pick", [])) if gender_vals else []
+            age_range_pick = st.multiselect("Age Range", age_range_vals, default=st.session_state.active_filters.get("age_range_pick", [])) if age_range_vals else []
 
-                    party_pick = st.multiselect("Party", party_vals, default=st.session_state.active_filters.get("party_pick", [])) if party_vals else []
-                    hh_party_pick = st.multiselect("Household Party", hh_party_vals, default=st.session_state.active_filters.get("hh_party_pick", [])) if hh_party_vals else []
-                    calc_party_pick = st.multiselect("Calculated Party", calc_party_vals, default=st.session_state.active_filters.get("calc_party_pick", [])) if calc_party_vals else []
-                    gender_pick = st.multiselect("Gender", gender_vals, default=st.session_state.active_filters.get("gender_pick", [])) if gender_vals else []
-                    age_range_pick = st.multiselect("Age Range", age_range_vals, default=st.session_state.active_filters.get("age_range_pick", [])) if age_range_vals else []
+            age_slider = None
+            if pd.to_numeric(df["_AgeNum"], errors="coerce").notna().any():
+                age_min = int(pd.to_numeric(df["_AgeNum"], errors="coerce").min())
+                age_max = int(pd.to_numeric(df["_AgeNum"], errors="coerce").max())
+                age_slider = st.slider("Age", age_min, age_max, st.session_state.active_filters.get("age_slider", (age_min, age_max)))
 
-                    age_slider = None
-                    if pd.to_numeric(df["_AgeNum"], errors="coerce").notna().any():
-                        age_min = int(pd.to_numeric(df["_AgeNum"], errors="coerce").min())
-                        age_max = int(pd.to_numeric(df["_AgeNum"], errors="coerce").max())
-                        age_slider = st.slider("Age", age_min, age_max, st.session_state.active_filters.get("age_slider", (age_min, age_max)))
+        with st.expander("Vote History", expanded=False):
+            vote_history_vals = sorted([v for v in df["_VoteHistory"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
 
-                with st.expander("Vote History", expanded=False):
-                    vote_history_vals = sorted([v for v in df["_VoteHistory"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+            vm_cols = [c for c in df.columns if str(c).endswith("_VM") and len(str(c)) >= 4]
+            year_vals = sorted(list(set([f"20{str(c)[1:3]}" for c in vm_cols if str(c)[1:3].isdigit()])))
+            type_map = {"G": "General Election", "P": "Primary Election"}
+            type_options = []
+            for c in vm_cols:
+                t = str(c)[0].upper()
+                label = type_map.get(t)
+                if label and label not in type_options:
+                    type_options.append(label)
 
-                    vm_cols = [c for c in df.columns if str(c).endswith("_VM") and len(str(c)) >= 4]
-                    year_vals = sorted(list(set([f"20{str(c)[1:3]}" for c in vm_cols if str(c)[1:3].isdigit()])))
-                    type_map = {"G": "General Election", "P": "Primary Election"}
-                    type_options = []
-                    for c in vm_cols:
-                        t = str(c)[0].upper()
-                        label = type_map.get(t)
-                        if label and label not in type_options:
-                            type_options.append(label)
+            year_options = ["(Any)"] + year_vals
+            type_options_full = ["(Any)"] + type_options
+            method_options = ["(Any)", "AP", "MB", "P", "Did Not Vote"]
 
-                    year_options = ["(Any)"] + year_vals
-                    type_options_full = ["(Any)"] + type_options
-                    method_options = ["(Any)", "AP", "MB", "P", "Did Not Vote"]
+            vh_year = st.selectbox("Year", year_options, index=year_options.index(st.session_state.active_filters.get("vh_year", "(Any)")) if st.session_state.active_filters.get("vh_year", "(Any)") in year_options else 0)
+            vh_type = st.selectbox("Election Type", type_options_full, index=type_options_full.index(st.session_state.active_filters.get("vh_type", "(Any)")) if st.session_state.active_filters.get("vh_type", "(Any)") in type_options_full else 0)
+            vh_method = st.selectbox("Vote Method", method_options, index=method_options.index(st.session_state.active_filters.get("vh_method", "(Any)")) if st.session_state.active_filters.get("vh_method", "(Any)") in method_options else 0)
 
-                    vh_year = st.selectbox("Year", year_options, index=year_options.index(st.session_state.active_filters.get("vh_year", "(Any)")) if st.session_state.active_filters.get("vh_year", "(Any)") in year_options else 0)
-                    vh_type = st.selectbox("Election Type", type_options_full, index=type_options_full.index(st.session_state.active_filters.get("vh_type", "(Any)")) if st.session_state.active_filters.get("vh_type", "(Any)") in type_options_full else 0)
-                    vh_method = st.selectbox("Vote Method", method_options, index=method_options.index(st.session_state.active_filters.get("vh_method", "(Any)")) if st.session_state.active_filters.get("vh_method", "(Any)") in method_options else 0)
+            use_new_reg_filter = st.checkbox("Filter by Recently Registered", value=st.session_state.active_filters.get("use_new_reg_filter", False))
+            if use_new_reg_filter:
+                new_reg_months = st.slider("Registered in the last X months", 1, 24, st.session_state.active_filters.get("new_reg_months", 12))
+                st.caption("Based on most recent registration date in the file")
+            else:
+                new_reg_months = 12
+            vote_history_pick = st.multiselect("Vote History", vote_history_vals, default=st.session_state.active_filters.get("vote_history_pick", [])) if vote_history_vals else []
 
-                    use_new_reg_filter = st.checkbox("Filter by Recently Registered", value=st.session_state.active_filters.get("use_new_reg_filter", False))
-                    if use_new_reg_filter:
-                        new_reg_months = st.slider("Registered in the last X months", 1, 24, st.session_state.active_filters.get("new_reg_months", 12))
-                        st.caption("Based on most recent registration date in the file")
-                    else:
-                        new_reg_months = 12
-                    vote_history_pick = st.multiselect("Vote History", vote_history_vals, default=st.session_state.active_filters.get("vote_history_pick", [])) if vote_history_vals else []
+        with st.expander("Mail In Ballots", expanded=False):
+            mib_perm_vals = sorted([v for v in df["_MBPerm"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+            mib_applied_vals = sorted([v for v in df["_MIBApplied"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+            mib_voted_vals = sorted([v for v in df["_MIBVoted"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
 
-                with st.expander("Mail In Ballots", expanded=False):
-                    mib_perm_vals = sorted([v for v in df["_MBPerm"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
-                    mib_applied_vals = sorted([v for v in df["_MIBApplied"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
-                    mib_voted_vals = sorted([v for v in df["_MIBVoted"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+            mib_perm_pick = st.multiselect("MIB Perm", mib_perm_vals, default=st.session_state.active_filters.get("mib_perm_pick", [])) if mib_perm_vals else []
+            mib_applied_pick = st.multiselect("MIB Applied", mib_applied_vals, default=st.session_state.active_filters.get("mib_applied_pick", [])) if mib_applied_vals else []
+            mib_voted_pick = st.multiselect("MIB Voted", mib_voted_vals, default=st.session_state.active_filters.get("mib_voted_pick", [])) if mib_voted_vals else []
 
-                    mib_perm_pick = st.multiselect("MIB Perm", mib_perm_vals, default=st.session_state.active_filters.get("mib_perm_pick", [])) if mib_perm_vals else []
-                    mib_applied_pick = st.multiselect("MIB Applied", mib_applied_vals, default=st.session_state.active_filters.get("mib_applied_pick", [])) if mib_applied_vals else []
-                    mib_voted_pick = st.multiselect("MIB Voted", mib_voted_vals, default=st.session_state.active_filters.get("mib_voted_pick", [])) if mib_voted_vals else []
+            mib_prob_slider = None
+            if pd.to_numeric(df["_MIBProb"], errors="coerce").notna().any():
+                mib_min = float(pd.to_numeric(df["_MIBProb"], errors="coerce").min())
+                mib_max = float(pd.to_numeric(df["_MIBProb"], errors="coerce").max())
+                mib_prob_slider = st.slider("MIB Probability Score", mib_min, mib_max, st.session_state.active_filters.get("mib_prob_slider", (mib_min, mib_max)))
 
-                    mib_prob_slider = None
-                    if pd.to_numeric(df["_MIBProb"], errors="coerce").notna().any():
-                        mib_min = float(pd.to_numeric(df["_MIBProb"], errors="coerce").min())
-                        mib_max = float(pd.to_numeric(df["_MIBProb"], errors="coerce").max())
-                        mib_prob_slider = st.slider("MIB Probability Score", mib_min, mib_max, st.session_state.active_filters.get("mib_prob_slider", (mib_min, mib_max)))
+        with st.expander("Tags", expanded=False):
+            tag_map = {
+                "Pro 2A": "TAG0001_Pro2A",
+                "FOAC Target": "TAG00011_Pro2A_FOAC_TARG",
+                "MB Target": "TAG0002_MB_Target",
+                "Pro Life": "TAG0004_ProLife",
+                "Pro Labor": "TAG0005_ProLabor",
+                "Rep Donor": "TAG0006_RepDonor",
+                "Dem Donor": "TAG0007_DemDonor",
+                "Trump Donor": "TAG0008_TrumpDonor",
+                "PA Donor": "TAG00090_PADonor",
+                "Federal Donor": "TAG00100_FedDonor",
+                "Any Donor": "TAG00110_AllDonor",
+                "Teacher": "TAG0014_Teacher",
+                "Retired Teacher": "TAG0015_RetiredTeacher"
+            }
+            tag_options = ["(None)"] + list(tag_map.keys())
+            tag_choice = st.selectbox("Select Tag", tag_options, index=tag_options.index(st.session_state.active_filters.get("tag_choice", "(None)")) if st.session_state.active_filters.get("tag_choice", "(None)") in tag_options else 0)
 
-                with st.expander("Tags", expanded=False):
-                    tag_map = {
-                        "Pro 2A": "TAG0001_Pro2A",
-                        "FOAC Target": "TAG00011_Pro2A_FOAC_TARG",
-                        "MB Target": "TAG0002_MB_Target",
-                        "Pro Life": "TAG0004_ProLife",
-                        "Pro Labor": "TAG0005_ProLabor",
-                        "Rep Donor": "TAG0006_RepDonor",
-                        "Dem Donor": "TAG0007_DemDonor",
-                        "Trump Donor": "TAG0008_TrumpDonor",
-                        "PA Donor": "TAG00090_PADonor",
-                        "Federal Donor": "TAG00100_FedDonor",
-                        "Any Donor": "TAG00110_AllDonor",
-                        "Teacher": "TAG0014_Teacher",
-                        "Retired Teacher": "TAG0015_RetiredTeacher"
-                    }
-                    tag_options = ["(None)"] + list(tag_map.keys())
-                    tag_choice = st.selectbox("Select Tag", tag_options, index=tag_options.index(st.session_state.active_filters.get("tag_choice", "(None)")) if st.session_state.active_filters.get("tag_choice", "(None)") in tag_options else 0)
+        with st.expander("Contact Filters", expanded=False):
+            email_opts = ["All", "Has Email", "No Email"]
+            landline_opts = ["All", "Has Landline", "No Landline"]
+            mobile_opts = ["All", "Has Mobile", "No Mobile"]
+            has_email = st.selectbox("Email", email_opts, index=email_opts.index(st.session_state.active_filters.get("has_email", "All")) if st.session_state.active_filters.get("has_email", "All") in email_opts else 0)
+            has_landline = st.selectbox("Landline", landline_opts, index=landline_opts.index(st.session_state.active_filters.get("has_landline", "All")) if st.session_state.active_filters.get("has_landline", "All") in landline_opts else 0)
+            has_mobile = st.selectbox("Mobile", mobile_opts, index=mobile_opts.index(st.session_state.active_filters.get("has_mobile", "All")) if st.session_state.active_filters.get("has_mobile", "All") in mobile_opts else 0)
 
-                with st.expander("Contact Filters", expanded=False):
-                    email_opts = ["All", "Has Email", "No Email"]
-                    landline_opts = ["All", "Has Landline", "No Landline"]
-                    mobile_opts = ["All", "Has Mobile", "No Mobile"]
-                    has_email = st.selectbox("Email", email_opts, index=email_opts.index(st.session_state.active_filters.get("has_email", "All")) if st.session_state.active_filters.get("has_email", "All") in email_opts else 0)
-                    has_landline = st.selectbox("Landline", landline_opts, index=landline_opts.index(st.session_state.active_filters.get("has_landline", "All")) if st.session_state.active_filters.get("has_landline", "All") in landline_opts else 0)
-                    has_mobile = st.selectbox("Mobile", mobile_opts, index=mobile_opts.index(st.session_state.active_filters.get("has_mobile", "All")) if st.session_state.active_filters.get("has_mobile", "All") in mobile_opts else 0)
+        st.caption("Changes apply when you click 'Apply Filters'")
+        cols = st.columns(2)
+        apply_filters = cols[0].form_submit_button("Apply Filters", use_container_width=True, type="primary")
+        clear_filters = cols[1].form_submit_button("Clear Filters", use_container_width=True)
 
-                st.caption("Changes apply when you click 'Apply Filters'")
-                cols = st.columns(2)
-                apply_filters = cols[0].form_submit_button("Apply Filters", use_container_width=True, type="primary")
-                clear_filters = cols[1].form_submit_button("Clear Filters", use_container_width=True)
+    if clear_filters:
+        st.session_state.active_filters = {}
+        st.rerun()
 
-            if clear_filters:
-                st.session_state.active_filters = {}
-                st.rerun()
-
-            if apply_filters:
-                st.session_state.active_filters = {
-                    **geo_selections,
-                    "party_pick": party_pick,
-                    "hh_party_pick": hh_party_pick,
-                    "calc_party_pick": calc_party_pick,
-                    "gender_pick": gender_pick,
-                    "age_range_pick": age_range_pick,
-                    "age_slider": age_slider,
-                    "vh_year": vh_year,
-                    "vh_type": vh_type,
-                    "vh_method": vh_method,
-                    "use_new_reg_filter": use_new_reg_filter,
-                    "new_reg_months": new_reg_months,
-                    "vote_history_pick": vote_history_pick,
-                    "mib_perm_pick": mib_perm_pick,
-                    "mib_applied_pick": mib_applied_pick,
-                    "mib_voted_pick": mib_voted_pick,
-                    "mib_prob_slider": mib_prob_slider,
-                    "tag_choice": tag_choice,
-                    "has_email": has_email,
-                    "has_landline": has_landline,
-                    "has_mobile": has_mobile,
-                }
-
-
-if not st.session_state.data_ready:
-    metric_cols = st.columns(7, gap="small")
-    metric_values = [
-        ("Voters", "0"),
-        ("Households", "0"),
-        ("Emails", "0"),
-        ("Landlines", "0"),
-        ("Mobiles", "0"),
-        ("Unique Counties", "0"),
-        ("Unique Precincts", "0"),
-    ]
-    for col, (label, value) in zip(metric_cols, metric_values):
-        with col:
-            st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
-
-    divider()
-    st.markdown('<div class="section-card"><div class="small-header">Ready when you are</div><div class="tiny-muted">The dashboard shell loads first now. Click <b>Load Voter Data</b> in the sidebar to bring in the file, then apply your filters and create exports or the door-to-door PDF.</div></div>', unsafe_allow_html=True)
-    st.stop()
+    if apply_filters:
+        st.session_state.active_filters = {
+            **geo_selections,
+            "party_pick": party_pick,
+            "hh_party_pick": hh_party_pick,
+            "calc_party_pick": calc_party_pick,
+            "gender_pick": gender_pick,
+            "age_range_pick": age_range_pick,
+            "age_slider": age_slider,
+            "vh_year": vh_year,
+            "vh_type": vh_type,
+            "vh_method": vh_method,
+            "use_new_reg_filter": use_new_reg_filter,
+            "new_reg_months": new_reg_months,
+            "vote_history_pick": vote_history_pick,
+            "mib_perm_pick": mib_perm_pick,
+            "mib_applied_pick": mib_applied_pick,
+            "mib_voted_pick": mib_voted_pick,
+            "mib_prob_slider": mib_prob_slider,
+            "tag_choice": tag_choice,
+            "has_email": has_email,
+            "has_landline": has_landline,
+            "has_mobile": has_mobile,
+        }
 
 active = st.session_state.active_filters
 geo_selections = {k: active.get(k, []) for k in ["County","Municipality","Precinct","USC","STS","STH","School District"]}
@@ -845,72 +808,33 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 divider()
 
+st.markdown('<div class="table-card">', unsafe_allow_html=True)
+st.markdown('<div class="small-header">Preview</div>', unsafe_allow_html=True)
+st.dataframe(filtered.head(100), use_container_width=True, hide_index=True)
+st.markdown('</div>', unsafe_allow_html=True)
+
+divider()
+
 st.markdown('<div class="export-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
-st.markdown('<div class="export-note">Files are only prepared when you click the button for that export type.</div>', unsafe_allow_html=True)
+st.markdown('<div class="export-note">Web version downloads files directly through your browser.</div>', unsafe_allow_html=True)
 
-ex1, ex2, ex3, ex4 = st.columns([1.2, 1, 1, 1])
+ex1, ex2, ex3 = st.columns([1.4, 1, 1])
 with ex1:
     household_mode = st.radio("Mailing Mode", ["Not Householded", "Householded"], horizontal=True)
-    st.caption(f"Filtered rows: {len(filtered):,}")
 
-@st.cache_data(show_spinner=False)
-def build_mail_export_bundle(filtered_frame: pd.DataFrame, householded: bool):
-    mail_df = build_mail_export(filtered_frame, householded=householded)
-    return {
-        "rows": len(mail_df),
-        "csv": mail_df.to_csv(index=False).encode("utf-8"),
-        "xlsx": dataframe_to_excel_bytes(mail_df, "Mail File"),
-    }
-
-@st.cache_data(show_spinner=False)
-def build_texting_export_bundle(filtered_frame: pd.DataFrame):
-    texting_df = build_texting_export(filtered_frame)
-    return {
-        "rows": len(texting_df),
-        "csv": texting_df.to_csv(index=False).encode("utf-8"),
-    }
-
-@st.cache_data(show_spinner=False)
-def build_filtered_export_bundle(filtered_frame: pd.DataFrame):
-    export_df = filtered_frame.copy()
-    return {
-        "rows": len(export_df),
-        "csv": export_df.to_csv(index=False).encode("utf-8"),
-    }
-
-mail_cache_key = f"mail_export_bundle_{household_mode}"
+mail_df = build_mail_export(filtered, householded=(household_mode == "Householded"))
+texting_df = build_texting_export(filtered)
+mail_csv = mail_df.to_csv(index=False).encode("utf-8")
+mail_xlsx = dataframe_to_excel_bytes(mail_df, "Mail File")
+texting_csv = texting_df.to_csv(index=False).encode("utf-8")
 
 with ex2:
-    if st.button("Prepare Mail Files", use_container_width=True, key="prep_mail_exports"):
-        with st.spinner("Preparing mail files..."):
-            st.session_state[mail_cache_key] = build_mail_export_bundle(filtered, householded=(household_mode == "Householded"))
-    if mail_cache_key in st.session_state:
-        st.download_button("Download Mail CSV", data=st.session_state[mail_cache_key]["csv"], file_name="candidate_connect_mail_file.csv", mime="text/csv", use_container_width=True, key="download_mail_csv")
-        st.download_button("Download Mail Excel", data=st.session_state[mail_cache_key]["xlsx"], file_name="candidate_connect_mail_file.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key="download_mail_xlsx")
-        st.caption(f"Mail rows: {st.session_state[mail_cache_key]['rows']:,}")
-    else:
-        st.caption("Click Prepare Mail Files")
-
+    st.download_button("Download Mail CSV", data=mail_csv, file_name="candidate_connect_mail_file.csv", mime="text/csv", use_container_width=True)
+    st.download_button("Download Mail Excel", data=mail_xlsx, file_name="candidate_connect_mail_file.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 with ex3:
-    if st.button("Prepare Texting CSV", use_container_width=True, key="prep_texting_export"):
-        with st.spinner("Preparing texting CSV..."):
-            st.session_state["texting_export_bundle"] = build_texting_export_bundle(filtered)
-    if "texting_export_bundle" in st.session_state:
-        st.download_button("Download Texting CSV", data=st.session_state["texting_export_bundle"]["csv"], file_name="candidate_connect_texting_file.csv", mime="text/csv", use_container_width=True, key="download_texting_csv")
-        st.caption(f"Text rows: {st.session_state['texting_export_bundle']['rows']:,}")
-    else:
-        st.caption("Click Prepare Texting CSV")
-
-with ex4:
-    if st.button("Prepare Filtered CSV", use_container_width=True, key="prep_filtered_export"):
-        with st.spinner("Preparing filtered CSV..."):
-            st.session_state["filtered_export_bundle"] = build_filtered_export_bundle(filtered)
-    if "filtered_export_bundle" in st.session_state:
-        st.download_button("Download Filtered CSV", data=st.session_state["filtered_export_bundle"]["csv"], file_name="candidate_connect_filtered_data.csv", mime="text/csv", use_container_width=True, key="download_filtered_csv")
-        st.caption(f"Rows: {st.session_state['filtered_export_bundle']['rows']:,}")
-    else:
-        st.caption("Click Prepare Filtered CSV")
+    st.download_button("Download Texting CSV", data=texting_csv, file_name="candidate_connect_texting_file.csv", mime="text/csv", use_container_width=True)
+    st.caption(f"Mail rows: {len(mail_df):,} | Text rows: {len(texting_df):,}")
 
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -919,7 +843,7 @@ divider()
 
 st.markdown('<div class="export-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Door-to-Door PDF Report</div>', unsafe_allow_html=True)
-st.markdown('<div class="export-note">Matches the desktop-style report with cover page, precinct counts, precinct bookmarks, and detailed street list pages. Files are only built when requested.</div>', unsafe_allow_html=True)
+st.markdown('<div class="export-note">Matches the desktop-style report with cover page, precinct counts, precinct bookmarks, and detailed street list pages.</div>', unsafe_allow_html=True)
 
 def build_pdf_report_title(filtered_frame: pd.DataFrame) -> str:
     county_label = ""
@@ -944,68 +868,38 @@ def build_pdf_report_title(filtered_frame: pd.DataFrame) -> str:
 
 created_date_text = pd.Timestamp.now().strftime("%m/%d/%Y")
 pdf_report_title = build_pdf_report_title(filtered)
+d2d_preview_df = build_door_to_door_table(filtered)
 
-d2d_stats_df = build_door_to_door_table(filtered)
 pdf_col1, pdf_col2, pdf_col3 = st.columns([1.2, 1, 1])
 
 with pdf_col1:
-    st.caption(f"Precincts: {d2d_stats_df['Precinct'].nunique() if 'Precinct' in d2d_stats_df.columns and len(d2d_stats_df) else 0:,} | Rows: {len(d2d_stats_df):,}")
-
-@st.cache_data(show_spinner=False)
-def build_pdf_bytes_cached(filtered_frame: pd.DataFrame, created_date: str, report_title: str, candidate_logo_path: str, tss_logo_path: str) -> bytes:
-    return generate_door_to_door_pdf(
-        filtered=filtered_frame,
-        created_date=created_date,
-        report_title=report_title,
-        candidate_logo_path=candidate_logo_path,
-        tss_logo_path=tss_logo_path,
-    )
-
-@st.cache_data(show_spinner=False)
-def build_d2d_excel_bundle(filtered_frame: pd.DataFrame):
-    d2d_df = build_door_to_door_table(filtered_frame)
-    return {
-        "rows": len(d2d_df),
-        "xlsx": dataframe_to_excel_bytes(d2d_df, "DoorToDoor"),
-    }
+    st.caption(f"Precincts: {d2d_preview_df['Precinct'].nunique() if 'Precinct' in d2d_preview_df.columns and len(d2d_preview_df) else 0:,} | Rows: {len(d2d_preview_df):,}")
 
 with pdf_col2:
-    if st.button("Prepare Door-to-Door PDF", use_container_width=True, type="primary"):
-        with st.spinner("Building PDF report..."):
-            st.session_state["door_to_door_pdf_bytes"] = build_pdf_bytes_cached(
-                filtered,
-                created_date_text,
-                pdf_report_title,
-                str(CC_LOGO),
-                str(TSS_LOGO),
-            )
-
-    if "door_to_door_pdf_bytes" in st.session_state:
-        st.download_button(
-            "Download Door-to-Door PDF",
-            data=st.session_state["door_to_door_pdf_bytes"],
-            file_name="candidate_connect_door_to_door_report.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
-    else:
-        st.caption("Click Prepare Door-to-Door PDF to build the file.")
+    pdf_bytes = generate_door_to_door_pdf(
+        filtered=filtered,
+        created_date=created_date_text,
+        report_title=pdf_report_title,
+        candidate_logo_path=str(CC_LOGO),
+        tss_logo_path=str(TSS_LOGO),
+    )
+    st.download_button(
+        "Download Door-to-Door PDF",
+        data=pdf_bytes,
+        file_name="candidate_connect_door_to_door_report.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
 
 with pdf_col3:
-    if st.button("Prepare Door-to-Door Excel", use_container_width=True, key="prep_d2d_excel"):
-        with st.spinner("Preparing door-to-door Excel..."):
-            st.session_state["door_to_door_excel_bundle"] = build_d2d_excel_bundle(filtered)
-    if "door_to_door_excel_bundle" in st.session_state:
-        st.download_button(
-            "Download Door-to-Door Excel",
-            data=st.session_state["door_to_door_excel_bundle"]["xlsx"],
-            file_name="candidate_connect_door_to_door_report.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key="download_d2d_excel",
-        )
-        st.caption(f"Rows: {st.session_state['door_to_door_excel_bundle']['rows']:,}")
-    else:
-        st.caption("Click Prepare Door-to-Door Excel to build the file.")
+    d2d_excel = dataframe_to_excel_bytes(d2d_preview_df, "DoorToDoor")
+    st.download_button(
+        "Download Door-to-Door Excel",
+        data=d2d_excel,
+        file_name="candidate_connect_door_to_door_report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
 
+st.dataframe(d2d_preview_df.head(100), use_container_width=True, hide_index=True)
 st.markdown('</div>', unsafe_allow_html=True)
