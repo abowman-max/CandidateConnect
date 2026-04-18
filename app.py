@@ -449,21 +449,18 @@ def divider():
 cc_logo_uri = img_to_data_uri(CC_LOGO)
 tss_logo_uri = img_to_data_uri(TSS_LOGO)
 
-loading_box = st.empty()
-loading_box.markdown('<div class="top-shell"><div class="small-header">Candidate Connect</div><div class="tiny-muted">Web dashboard for filters, charts, and exports</div></div>', unsafe_allow_html=True)
-status_box = st.empty()
-status_box.markdown('<div class="section-card"><div class="small-header loading-banner">Loading data from Google Drive...</div></div>', unsafe_allow_html=True)
+if "data_ready" not in st.session_state:
+    st.session_state.data_ready = False
 
-try:
-    df = load_data()
-except Exception as e:
-    status_box.empty()
-    st.error(f"Error loading data: {e}")
-    st.stop()
+df = pd.DataFrame()
+if st.session_state.data_ready:
+    try:
+        df = load_data()
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        st.stop()
 
-loading_box.empty()
-status_box.empty()
-
+header_rows_text = f"{len(df):,}" if st.session_state.data_ready else "0 (load on demand)"
 header_html = f"""
 <div class="top-shell">
   <div class="brand-grid">
@@ -471,7 +468,7 @@ header_html = f"""
     <div class="brand-center">
       <div class="brand-title">Candidate Connect</div>
       <div class="brand-sub">Voter Data &amp; Engagement Platform</div>
-      <div class="brand-status">Data Source: Google Drive &nbsp;&nbsp;|&nbsp;&nbsp; Last Loaded File: {file_modified_text(LOCAL_PARQUET)} &nbsp;&nbsp;|&nbsp;&nbsp; Rows Available: {len(df):,}</div>
+      <div class="brand-status">Data Source: Google Drive &nbsp;&nbsp;|&nbsp;&nbsp; Last Loaded File: {file_modified_text(LOCAL_PARQUET)} &nbsp;&nbsp;|&nbsp;&nbsp; Rows Available: {header_rows_text}</div>
     </div>
     <div class="brand-right"><div class="powered-by">Powered By</div>{f'<img class="logo-tss" src="{tss_logo_uri}"/>' if tss_logo_uri else ''}</div>
   </div>
@@ -487,138 +484,173 @@ with st.sidebar:
     st.header("Filters")
     st.markdown('<div class="sidebar-note">Expanded filter set from the desktop version is being restored in stages.</div>', unsafe_allow_html=True)
 
-    with st.form("filter_form", clear_on_submit=False):
-        with st.expander("Geography", expanded=False):
-            geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in df.columns]
-            geo_selections = {}
-            for col in geo_cols:
-                vals = df[col].dropna().astype(str).str.strip()
-                vals = sorted([v for v in vals.unique().tolist() if v != ""])
-                geo_selections[col] = st.multiselect(col, vals, default=st.session_state.active_filters.get(col, []))
+    if not st.session_state.data_ready:
+        st.info("The app now opens first and waits to load voter data until you ask for it.")
+        if st.button("Load Voter Data", use_container_width=True, type="primary"):
+            with st.spinner("Loading voter data from Google Drive..."):
+                try:
+                    _ = load_data()
+                    st.session_state.data_ready = True
+                except Exception as e:
+                    st.error(f"Error loading data: {e}")
+            st.rerun()
+        st.caption("After the data loads once, your filters, counts, exports, and report tools will appear.")
+    else:
+            st.header("Filters")
+            st.markdown('<div class="sidebar-note">Expanded filter set from the desktop version is being restored in stages.</div>', unsafe_allow_html=True)
 
-        with st.expander("Voter Details", expanded=False):
-            party_vals = sorted([v for v in df["Party"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "Party" in df.columns else []
-            gender_vals = sorted([v for v in df["_Gender"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
-            age_range_vals = sorted([v for v in df["_AgeRange"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
-            hh_party_vals = sorted([v for v in df["HH-Party"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "HH-Party" in df.columns else []
-            calc_party_vals = sorted([v for v in df["CalculatedParty"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "CalculatedParty" in df.columns else []
+            with st.form("filter_form", clear_on_submit=False):
+                with st.expander("Geography", expanded=False):
+                    geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in df.columns]
+                    geo_selections = {}
+                    for col in geo_cols:
+                        vals = df[col].dropna().astype(str).str.strip()
+                        vals = sorted([v for v in vals.unique().tolist() if v != ""])
+                        geo_selections[col] = st.multiselect(col, vals, default=st.session_state.active_filters.get(col, []))
 
-            party_pick = st.multiselect("Party", party_vals, default=st.session_state.active_filters.get("party_pick", [])) if party_vals else []
-            hh_party_pick = st.multiselect("Household Party", hh_party_vals, default=st.session_state.active_filters.get("hh_party_pick", [])) if hh_party_vals else []
-            calc_party_pick = st.multiselect("Calculated Party", calc_party_vals, default=st.session_state.active_filters.get("calc_party_pick", [])) if calc_party_vals else []
-            gender_pick = st.multiselect("Gender", gender_vals, default=st.session_state.active_filters.get("gender_pick", [])) if gender_vals else []
-            age_range_pick = st.multiselect("Age Range", age_range_vals, default=st.session_state.active_filters.get("age_range_pick", [])) if age_range_vals else []
+                with st.expander("Voter Details", expanded=False):
+                    party_vals = sorted([v for v in df["Party"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "Party" in df.columns else []
+                    gender_vals = sorted([v for v in df["_Gender"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+                    age_range_vals = sorted([v for v in df["_AgeRange"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+                    hh_party_vals = sorted([v for v in df["HH-Party"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "HH-Party" in df.columns else []
+                    calc_party_vals = sorted([v for v in df["CalculatedParty"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "CalculatedParty" in df.columns else []
 
-            age_slider = None
-            if pd.to_numeric(df["_AgeNum"], errors="coerce").notna().any():
-                age_min = int(pd.to_numeric(df["_AgeNum"], errors="coerce").min())
-                age_max = int(pd.to_numeric(df["_AgeNum"], errors="coerce").max())
-                age_slider = st.slider("Age", age_min, age_max, st.session_state.active_filters.get("age_slider", (age_min, age_max)))
+                    party_pick = st.multiselect("Party", party_vals, default=st.session_state.active_filters.get("party_pick", [])) if party_vals else []
+                    hh_party_pick = st.multiselect("Household Party", hh_party_vals, default=st.session_state.active_filters.get("hh_party_pick", [])) if hh_party_vals else []
+                    calc_party_pick = st.multiselect("Calculated Party", calc_party_vals, default=st.session_state.active_filters.get("calc_party_pick", [])) if calc_party_vals else []
+                    gender_pick = st.multiselect("Gender", gender_vals, default=st.session_state.active_filters.get("gender_pick", [])) if gender_vals else []
+                    age_range_pick = st.multiselect("Age Range", age_range_vals, default=st.session_state.active_filters.get("age_range_pick", [])) if age_range_vals else []
 
-        with st.expander("Vote History", expanded=False):
-            vote_history_vals = sorted([v for v in df["_VoteHistory"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+                    age_slider = None
+                    if pd.to_numeric(df["_AgeNum"], errors="coerce").notna().any():
+                        age_min = int(pd.to_numeric(df["_AgeNum"], errors="coerce").min())
+                        age_max = int(pd.to_numeric(df["_AgeNum"], errors="coerce").max())
+                        age_slider = st.slider("Age", age_min, age_max, st.session_state.active_filters.get("age_slider", (age_min, age_max)))
 
-            vm_cols = [c for c in df.columns if str(c).endswith("_VM") and len(str(c)) >= 4]
-            year_vals = sorted(list(set([f"20{str(c)[1:3]}" for c in vm_cols if str(c)[1:3].isdigit()])))
-            type_map = {"G": "General Election", "P": "Primary Election"}
-            type_options = []
-            for c in vm_cols:
-                t = str(c)[0].upper()
-                label = type_map.get(t)
-                if label and label not in type_options:
-                    type_options.append(label)
+                with st.expander("Vote History", expanded=False):
+                    vote_history_vals = sorted([v for v in df["_VoteHistory"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
 
-            year_options = ["(Any)"] + year_vals
-            type_options_full = ["(Any)"] + type_options
-            method_options = ["(Any)", "AP", "MB", "P", "Did Not Vote"]
+                    vm_cols = [c for c in df.columns if str(c).endswith("_VM") and len(str(c)) >= 4]
+                    year_vals = sorted(list(set([f"20{str(c)[1:3]}" for c in vm_cols if str(c)[1:3].isdigit()])))
+                    type_map = {"G": "General Election", "P": "Primary Election"}
+                    type_options = []
+                    for c in vm_cols:
+                        t = str(c)[0].upper()
+                        label = type_map.get(t)
+                        if label and label not in type_options:
+                            type_options.append(label)
 
-            vh_year = st.selectbox("Year", year_options, index=year_options.index(st.session_state.active_filters.get("vh_year", "(Any)")) if st.session_state.active_filters.get("vh_year", "(Any)") in year_options else 0)
-            vh_type = st.selectbox("Election Type", type_options_full, index=type_options_full.index(st.session_state.active_filters.get("vh_type", "(Any)")) if st.session_state.active_filters.get("vh_type", "(Any)") in type_options_full else 0)
-            vh_method = st.selectbox("Vote Method", method_options, index=method_options.index(st.session_state.active_filters.get("vh_method", "(Any)")) if st.session_state.active_filters.get("vh_method", "(Any)") in method_options else 0)
+                    year_options = ["(Any)"] + year_vals
+                    type_options_full = ["(Any)"] + type_options
+                    method_options = ["(Any)", "AP", "MB", "P", "Did Not Vote"]
 
-            use_new_reg_filter = st.checkbox("Filter by Recently Registered", value=st.session_state.active_filters.get("use_new_reg_filter", False))
-            if use_new_reg_filter:
-                new_reg_months = st.slider("Registered in the last X months", 1, 24, st.session_state.active_filters.get("new_reg_months", 12))
-                st.caption("Based on most recent registration date in the file")
-            else:
-                new_reg_months = 12
-            vote_history_pick = st.multiselect("Vote History", vote_history_vals, default=st.session_state.active_filters.get("vote_history_pick", [])) if vote_history_vals else []
+                    vh_year = st.selectbox("Year", year_options, index=year_options.index(st.session_state.active_filters.get("vh_year", "(Any)")) if st.session_state.active_filters.get("vh_year", "(Any)") in year_options else 0)
+                    vh_type = st.selectbox("Election Type", type_options_full, index=type_options_full.index(st.session_state.active_filters.get("vh_type", "(Any)")) if st.session_state.active_filters.get("vh_type", "(Any)") in type_options_full else 0)
+                    vh_method = st.selectbox("Vote Method", method_options, index=method_options.index(st.session_state.active_filters.get("vh_method", "(Any)")) if st.session_state.active_filters.get("vh_method", "(Any)") in method_options else 0)
 
-        with st.expander("Mail In Ballots", expanded=False):
-            mib_perm_vals = sorted([v for v in df["_MBPerm"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
-            mib_applied_vals = sorted([v for v in df["_MIBApplied"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
-            mib_voted_vals = sorted([v for v in df["_MIBVoted"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+                    use_new_reg_filter = st.checkbox("Filter by Recently Registered", value=st.session_state.active_filters.get("use_new_reg_filter", False))
+                    if use_new_reg_filter:
+                        new_reg_months = st.slider("Registered in the last X months", 1, 24, st.session_state.active_filters.get("new_reg_months", 12))
+                        st.caption("Based on most recent registration date in the file")
+                    else:
+                        new_reg_months = 12
+                    vote_history_pick = st.multiselect("Vote History", vote_history_vals, default=st.session_state.active_filters.get("vote_history_pick", [])) if vote_history_vals else []
 
-            mib_perm_pick = st.multiselect("MIB Perm", mib_perm_vals, default=st.session_state.active_filters.get("mib_perm_pick", [])) if mib_perm_vals else []
-            mib_applied_pick = st.multiselect("MIB Applied", mib_applied_vals, default=st.session_state.active_filters.get("mib_applied_pick", [])) if mib_applied_vals else []
-            mib_voted_pick = st.multiselect("MIB Voted", mib_voted_vals, default=st.session_state.active_filters.get("mib_voted_pick", [])) if mib_voted_vals else []
+                with st.expander("Mail In Ballots", expanded=False):
+                    mib_perm_vals = sorted([v for v in df["_MBPerm"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+                    mib_applied_vals = sorted([v for v in df["_MIBApplied"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+                    mib_voted_vals = sorted([v for v in df["_MIBVoted"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
 
-            mib_prob_slider = None
-            if pd.to_numeric(df["_MIBProb"], errors="coerce").notna().any():
-                mib_min = float(pd.to_numeric(df["_MIBProb"], errors="coerce").min())
-                mib_max = float(pd.to_numeric(df["_MIBProb"], errors="coerce").max())
-                mib_prob_slider = st.slider("MIB Probability Score", mib_min, mib_max, st.session_state.active_filters.get("mib_prob_slider", (mib_min, mib_max)))
+                    mib_perm_pick = st.multiselect("MIB Perm", mib_perm_vals, default=st.session_state.active_filters.get("mib_perm_pick", [])) if mib_perm_vals else []
+                    mib_applied_pick = st.multiselect("MIB Applied", mib_applied_vals, default=st.session_state.active_filters.get("mib_applied_pick", [])) if mib_applied_vals else []
+                    mib_voted_pick = st.multiselect("MIB Voted", mib_voted_vals, default=st.session_state.active_filters.get("mib_voted_pick", [])) if mib_voted_vals else []
 
-        with st.expander("Tags", expanded=False):
-            tag_map = {
-                "Pro 2A": "TAG0001_Pro2A",
-                "FOAC Target": "TAG00011_Pro2A_FOAC_TARG",
-                "MB Target": "TAG0002_MB_Target",
-                "Pro Life": "TAG0004_ProLife",
-                "Pro Labor": "TAG0005_ProLabor",
-                "Rep Donor": "TAG0006_RepDonor",
-                "Dem Donor": "TAG0007_DemDonor",
-                "Trump Donor": "TAG0008_TrumpDonor",
-                "PA Donor": "TAG00090_PADonor",
-                "Federal Donor": "TAG00100_FedDonor",
-                "Any Donor": "TAG00110_AllDonor",
-                "Teacher": "TAG0014_Teacher",
-                "Retired Teacher": "TAG0015_RetiredTeacher"
-            }
-            tag_options = ["(None)"] + list(tag_map.keys())
-            tag_choice = st.selectbox("Select Tag", tag_options, index=tag_options.index(st.session_state.active_filters.get("tag_choice", "(None)")) if st.session_state.active_filters.get("tag_choice", "(None)") in tag_options else 0)
+                    mib_prob_slider = None
+                    if pd.to_numeric(df["_MIBProb"], errors="coerce").notna().any():
+                        mib_min = float(pd.to_numeric(df["_MIBProb"], errors="coerce").min())
+                        mib_max = float(pd.to_numeric(df["_MIBProb"], errors="coerce").max())
+                        mib_prob_slider = st.slider("MIB Probability Score", mib_min, mib_max, st.session_state.active_filters.get("mib_prob_slider", (mib_min, mib_max)))
 
-        with st.expander("Contact Filters", expanded=False):
-            email_opts = ["All", "Has Email", "No Email"]
-            landline_opts = ["All", "Has Landline", "No Landline"]
-            mobile_opts = ["All", "Has Mobile", "No Mobile"]
-            has_email = st.selectbox("Email", email_opts, index=email_opts.index(st.session_state.active_filters.get("has_email", "All")) if st.session_state.active_filters.get("has_email", "All") in email_opts else 0)
-            has_landline = st.selectbox("Landline", landline_opts, index=landline_opts.index(st.session_state.active_filters.get("has_landline", "All")) if st.session_state.active_filters.get("has_landline", "All") in landline_opts else 0)
-            has_mobile = st.selectbox("Mobile", mobile_opts, index=mobile_opts.index(st.session_state.active_filters.get("has_mobile", "All")) if st.session_state.active_filters.get("has_mobile", "All") in mobile_opts else 0)
+                with st.expander("Tags", expanded=False):
+                    tag_map = {
+                        "Pro 2A": "TAG0001_Pro2A",
+                        "FOAC Target": "TAG00011_Pro2A_FOAC_TARG",
+                        "MB Target": "TAG0002_MB_Target",
+                        "Pro Life": "TAG0004_ProLife",
+                        "Pro Labor": "TAG0005_ProLabor",
+                        "Rep Donor": "TAG0006_RepDonor",
+                        "Dem Donor": "TAG0007_DemDonor",
+                        "Trump Donor": "TAG0008_TrumpDonor",
+                        "PA Donor": "TAG00090_PADonor",
+                        "Federal Donor": "TAG00100_FedDonor",
+                        "Any Donor": "TAG00110_AllDonor",
+                        "Teacher": "TAG0014_Teacher",
+                        "Retired Teacher": "TAG0015_RetiredTeacher"
+                    }
+                    tag_options = ["(None)"] + list(tag_map.keys())
+                    tag_choice = st.selectbox("Select Tag", tag_options, index=tag_options.index(st.session_state.active_filters.get("tag_choice", "(None)")) if st.session_state.active_filters.get("tag_choice", "(None)") in tag_options else 0)
 
-        st.caption("Changes apply when you click 'Apply Filters'")
-        cols = st.columns(2)
-        apply_filters = cols[0].form_submit_button("Apply Filters", use_container_width=True, type="primary")
-        clear_filters = cols[1].form_submit_button("Clear Filters", use_container_width=True)
+                with st.expander("Contact Filters", expanded=False):
+                    email_opts = ["All", "Has Email", "No Email"]
+                    landline_opts = ["All", "Has Landline", "No Landline"]
+                    mobile_opts = ["All", "Has Mobile", "No Mobile"]
+                    has_email = st.selectbox("Email", email_opts, index=email_opts.index(st.session_state.active_filters.get("has_email", "All")) if st.session_state.active_filters.get("has_email", "All") in email_opts else 0)
+                    has_landline = st.selectbox("Landline", landline_opts, index=landline_opts.index(st.session_state.active_filters.get("has_landline", "All")) if st.session_state.active_filters.get("has_landline", "All") in landline_opts else 0)
+                    has_mobile = st.selectbox("Mobile", mobile_opts, index=mobile_opts.index(st.session_state.active_filters.get("has_mobile", "All")) if st.session_state.active_filters.get("has_mobile", "All") in mobile_opts else 0)
 
-    if clear_filters:
-        st.session_state.active_filters = {}
-        st.rerun()
+                st.caption("Changes apply when you click 'Apply Filters'")
+                cols = st.columns(2)
+                apply_filters = cols[0].form_submit_button("Apply Filters", use_container_width=True, type="primary")
+                clear_filters = cols[1].form_submit_button("Clear Filters", use_container_width=True)
 
-    if apply_filters:
-        st.session_state.active_filters = {
-            **geo_selections,
-            "party_pick": party_pick,
-            "hh_party_pick": hh_party_pick,
-            "calc_party_pick": calc_party_pick,
-            "gender_pick": gender_pick,
-            "age_range_pick": age_range_pick,
-            "age_slider": age_slider,
-            "vh_year": vh_year,
-            "vh_type": vh_type,
-            "vh_method": vh_method,
-            "use_new_reg_filter": use_new_reg_filter,
-            "new_reg_months": new_reg_months,
-            "vote_history_pick": vote_history_pick,
-            "mib_perm_pick": mib_perm_pick,
-            "mib_applied_pick": mib_applied_pick,
-            "mib_voted_pick": mib_voted_pick,
-            "mib_prob_slider": mib_prob_slider,
-            "tag_choice": tag_choice,
-            "has_email": has_email,
-            "has_landline": has_landline,
-            "has_mobile": has_mobile,
-        }
+            if clear_filters:
+                st.session_state.active_filters = {}
+                st.rerun()
+
+            if apply_filters:
+                st.session_state.active_filters = {
+                    **geo_selections,
+                    "party_pick": party_pick,
+                    "hh_party_pick": hh_party_pick,
+                    "calc_party_pick": calc_party_pick,
+                    "gender_pick": gender_pick,
+                    "age_range_pick": age_range_pick,
+                    "age_slider": age_slider,
+                    "vh_year": vh_year,
+                    "vh_type": vh_type,
+                    "vh_method": vh_method,
+                    "use_new_reg_filter": use_new_reg_filter,
+                    "new_reg_months": new_reg_months,
+                    "vote_history_pick": vote_history_pick,
+                    "mib_perm_pick": mib_perm_pick,
+                    "mib_applied_pick": mib_applied_pick,
+                    "mib_voted_pick": mib_voted_pick,
+                    "mib_prob_slider": mib_prob_slider,
+                    "tag_choice": tag_choice,
+                    "has_email": has_email,
+                    "has_landline": has_landline,
+                    "has_mobile": has_mobile,
+                }
+
+
+if not st.session_state.data_ready:
+    metric_cols = st.columns(7, gap="small")
+    metric_values = [
+        ("Voters", "0"),
+        ("Households", "0"),
+        ("Emails", "0"),
+        ("Landlines", "0"),
+        ("Mobiles", "0"),
+        ("Unique Counties", "0"),
+        ("Unique Precincts", "0"),
+    ]
+    for col, (label, value) in zip(metric_cols, metric_values):
+        with col:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
+
+    divider()
+    st.markdown('<div class="section-card"><div class="small-header">Ready when you are</div><div class="tiny-muted">The dashboard shell loads first now. Click <b>Load Voter Data</b> in the sidebar to bring in the file, then apply your filters and create exports or the door-to-door PDF.</div></div>', unsafe_allow_html=True)
+    st.stop()
 
 active = st.session_state.active_filters
 geo_selections = {k: active.get(k, []) for k in ["County","Municipality","Precinct","USC","STS","STH","School District"]}
