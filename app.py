@@ -510,11 +510,8 @@ with st.sidebar:
         vh_method = st.selectbox("Vote Method", ["(Any)", "AP", "MB", "P", "Did Not Vote"])
 
         vh_field_vals = []
-        if selected_vh_col != "(None)":
-            vh_field_vals = sorted([v for v in df[f"_{selected_vh_col}"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
         new_reg_pick = st.multiselect("Newly Registered", new_reg_vals) if new_reg_vals else []
         vote_history_pick = st.multiselect("Vote History", vote_history_vals) if vote_history_vals else []
-        vote_history_by_election_pick = st.multiselect("Vote History by Election", vh_field_vals) if vh_field_vals else []
 
     with st.expander("Mail In Ballots", expanded=False):
         mib_perm_vals = sorted([v for v in df["_MBPerm"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
