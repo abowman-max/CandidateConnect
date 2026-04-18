@@ -131,6 +131,33 @@ def build_address_line2(frame: pd.DataFrame) -> pd.Series:
     return apt.map(lambda x: f"Apt {x.strip()}" if str(x).strip() else "")
 
 
+def first_existing_column(frame: pd.DataFrame, candidates: list[str]) -> str | None:
+    for col in candidates:
+        if col in frame.columns:
+            return col
+    lowered = {str(c).strip().lower(): c for c in frame.columns}
+    for col in candidates:
+        key = col.strip().lower()
+        if key in lowered:
+            return lowered[key]
+    return None
+
+
+def resolve_city_state_zip(frame: pd.DataFrame):
+    city_col = first_existing_column(frame, ["MailingCity", "Mailing City", "City", "MailCity"])
+    state_col = first_existing_column(frame, ["MailingState", "Mailing State", "State", "MailState"])
+    zip_col = first_existing_column(frame, ["MailingZip", "Mailing Zip", "ZIP", "Zip", "ZipCode", "ZIPCODE", "MailZip"])
+
+    city = frame[city_col].map(smart_title) if city_col else pd.Series([""] * len(frame), index=frame.index)
+    state = frame[state_col].astype(str).fillna("").str.strip() if state_col else pd.Series([""] * len(frame), index=frame.index)
+    zipcode = frame[zip_col].astype(str).fillna("").str.strip() if zip_col else pd.Series([""] * len(frame), index=frame.index)
+
+    if not city_col and "Municipality" in frame.columns:
+        city = frame["Municipality"].map(smart_title)
+
+    return city, state, zipcode
+
+
 def resolve_voter_id_column(frame: pd.DataFrame) -> str | None:
     priority = ["PA ID Number", "State Voter ID", "Voter ID", "VoterID", "PA Voter ID"]
     for col in priority:
@@ -180,6 +207,11 @@ def build_mail_export(frame: pd.DataFrame, householded: bool) -> pd.DataFrame:
     out["_AddressLine2"] = build_address_line2(out)
     out["_HouseholdKey"] = household_key(out)
 
+    city, state, zipcode = resolve_city_state_zip(out)
+    out["_City"] = city
+    out["_State"] = state
+    out["_Zip"] = zipcode
+
     for col in ["County", "Municipality", "Precinct"]:
         if col not in out.columns:
             out[col] = ""
@@ -189,6 +221,9 @@ def build_mail_export(frame: pd.DataFrame, householded: bool) -> pd.DataFrame:
             "MailName": out["_FullName"],
             "AddressLine1": out["_AddressLine1"],
             "AddressLine2": out["_AddressLine2"],
+            "City": out["_City"],
+            "State": out["_State"],
+            "Zip": out["_Zip"],
             "Municipality": out["Municipality"].map(smart_title),
             "County": out["County"].map(smart_title),
             "Precinct": out["Precinct"].map(smart_title),
@@ -202,6 +237,9 @@ def build_mail_export(frame: pd.DataFrame, householded: bool) -> pd.DataFrame:
             "MailName": household_display_name(group),
             "AddressLine1": clean_text(first.get("_AddressLine1", "")),
             "AddressLine2": clean_text(first.get("_AddressLine2", "")),
+            "City": clean_text(first.get("_City", "")),
+            "State": clean_text(first.get("_State", "")),
+            "Zip": clean_text(first.get("_Zip", "")),
             "Municipality": smart_title(first.get("Municipality", "")),
             "County": smart_title(first.get("County", "")),
             "Precinct": smart_title(first.get("Precinct", "")),
@@ -213,19 +251,23 @@ def build_mail_export(frame: pd.DataFrame, householded: bool) -> pd.DataFrame:
 def build_texting_export(frame: pd.DataFrame) -> pd.DataFrame:
     out = frame.copy()
     if "Mobile" not in out.columns:
-        return pd.DataFrame(columns=["VoterID", "Mobile", "County", "Precinct"])
+        return pd.DataFrame(columns=["VoterID", "FirstName", "MiddleName", "LastName", "FullName", "Mobile", "County", "Precinct"])
 
     out["Mobile"] = out["Mobile"].astype(str).str.replace(r"\D", "", regex=True)
     out = out[out["Mobile"].str.strip() != ""].copy()
 
     voter_col = resolve_voter_id_column(out)
     out["VoterID"] = out[voter_col].astype(str).str.strip() if voter_col else ""
+    out["FirstName"] = out["FirstName"].map(smart_title) if "FirstName" in out.columns else ""
+    out["MiddleName"] = out["MiddleName"].map(smart_title) if "MiddleName" in out.columns else ""
+    out["LastName"] = out["LastName"].map(smart_title) if "LastName" in out.columns else ""
+    out["FullName"] = out.apply(full_name_from_row, axis=1)
 
     for col in ["County", "Precinct"]:
         if col not in out.columns:
             out[col] = ""
 
-    export_df = out[["VoterID", "Mobile", "County", "Precinct"]].copy()
+    export_df = out[["VoterID", "FirstName", "MiddleName", "LastName", "FullName", "Mobile", "County", "Precinct"]].copy()
     export_df["County"] = export_df["County"].map(smart_title)
     export_df["Precinct"] = export_df["Precinct"].map(smart_title)
     return export_df.reset_index(drop=True)
@@ -274,7 +316,6 @@ if age_range is not None:
 
 filtered = filtered.reset_index(drop=True)
 
-# Export controls
 st.subheader("Exports")
 ex1, ex2, ex3 = st.columns([1.2, 1, 1])
 
