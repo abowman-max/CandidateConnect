@@ -510,7 +510,6 @@ with st.sidebar:
                 age_slider = st.slider("Age", age_min, age_max, st.session_state.active_filters.get("age_slider", (age_min, age_max)))
 
         with st.expander("Vote History", expanded=False):
-            new_reg_options = ["(Any)", "Newest 3 months in file", "Newest 6 months in file", "Newest 1 year in file"]
             vote_history_vals = sorted([v for v in df["_VoteHistory"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
 
             vm_cols = [c for c in df.columns if str(c).endswith("_VM") and len(str(c)) >= 4]
@@ -531,7 +530,8 @@ with st.sidebar:
             vh_type = st.selectbox("Election Type", type_options_full, index=type_options_full.index(st.session_state.active_filters.get("vh_type", "(Any)")) if st.session_state.active_filters.get("vh_type", "(Any)") in type_options_full else 0)
             vh_method = st.selectbox("Vote Method", method_options, index=method_options.index(st.session_state.active_filters.get("vh_method", "(Any)")) if st.session_state.active_filters.get("vh_method", "(Any)") in method_options else 0)
 
-            new_reg_pick = st.selectbox("Newly Registered", new_reg_options, index=new_reg_options.index(st.session_state.active_filters.get("new_reg_pick", "(Any)")) if st.session_state.active_filters.get("new_reg_pick", "(Any)") in new_reg_options else 0)
+            use_new_reg_filter = st.checkbox("Use Newly Registered Filter", value=st.session_state.active_filters.get("use_new_reg_filter", False))
+            new_reg_months = st.slider("Registered within last X months", 1, 24, st.session_state.active_filters.get("new_reg_months", 12))
             vote_history_pick = st.multiselect("Vote History", vote_history_vals, default=st.session_state.active_filters.get("vote_history_pick", [])) if vote_history_vals else []
 
         with st.expander("Mail In Ballots", expanded=False):
@@ -596,7 +596,8 @@ with st.sidebar:
             "vh_year": vh_year,
             "vh_type": vh_type,
             "vh_method": vh_method,
-            "new_reg_pick": new_reg_pick,
+            "use_new_reg_filter": use_new_reg_filter,
+            "new_reg_months": new_reg_months,
             "vote_history_pick": vote_history_pick,
             "mib_perm_pick": mib_perm_pick,
             "mib_applied_pick": mib_applied_pick,
@@ -619,7 +620,8 @@ age_slider = active.get("age_slider", None)
 vh_year = active.get("vh_year", "(Any)")
 vh_type = active.get("vh_type", "(Any)")
 vh_method = active.get("vh_method", "(Any)")
-new_reg_pick = active.get("new_reg_pick", "(Any)")
+use_new_reg_filter = active.get("use_new_reg_filter", False)
+new_reg_months = active.get("new_reg_months", 12)
 vote_history_pick = active.get("vote_history_pick", [])
 mib_perm_pick = active.get("mib_perm_pick", [])
 mib_applied_pick = active.get("mib_applied_pick", [])
@@ -655,19 +657,13 @@ if pd.notna(latest_reg):
     st.caption(f"Newest registration date in file: {latest_reg.strftime('%m/%d/%Y')}")
 
 
-if new_reg_pick != "(Any)":
+if use_new_reg_filter:
     reg_dates = pd.to_datetime(filtered["_RegistrationDate"], errors="coerce")
     valid_mask = reg_dates.notna()
     latest_reg = reg_dates.max()
 
     if pd.notna(latest_reg):
-        if new_reg_pick == "Newest 3 months in file":
-            cutoff = latest_reg - pd.DateOffset(months=3)
-        elif new_reg_pick == "Newest 6 months in file":
-            cutoff = latest_reg - pd.DateOffset(months=6)
-        else:
-            cutoff = latest_reg - pd.DateOffset(years=1)
-
+        cutoff = latest_reg - pd.DateOffset(months=int(new_reg_months))
         filtered = filtered[valid_mask & (reg_dates >= cutoff)]
     else:
         filtered = filtered.iloc[0:0]
