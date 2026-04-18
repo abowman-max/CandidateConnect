@@ -510,7 +510,7 @@ with st.sidebar:
                 age_slider = st.slider("Age", age_min, age_max, st.session_state.active_filters.get("age_slider", (age_min, age_max)))
 
         with st.expander("Vote History", expanded=False):
-            new_reg_options = ["(Any)", "Less than 3 months", "Less than 6 months", "Less than 1 year"]
+            new_reg_options = ["(Any)", "Newest 3 months in file", "Newest 6 months in file", "Newest 1 year in file"]
             vote_history_vals = sorted([v for v in df["_VoteHistory"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
 
             vm_cols = [c for c in df.columns if str(c).endswith("_VM") and len(str(c)) >= 4]
@@ -650,34 +650,27 @@ if age_slider is not None:
     filtered = filtered[(filtered["_AgeNum"] >= age_slider[0]) & (filtered["_AgeNum"] <= age_slider[1])]
 
 reg_debug = pd.to_datetime(filtered["_RegistrationDate"], errors="coerce")
-valid_reg_count = reg_debug.notna().sum()
-last_3m = ((reg_debug.notna()) & (reg_debug >= (pd.Timestamp.today().normalize() - pd.DateOffset(months=3)))).sum()
-last_6m = ((reg_debug.notna()) & (reg_debug >= (pd.Timestamp.today().normalize() - pd.DateOffset(months=6)))).sum()
-last_1y = ((reg_debug.notna()) & (reg_debug >= (pd.Timestamp.today().normalize() - pd.DateOffset(years=1)))).sum()
-earliest_reg = reg_debug.min()
 latest_reg = reg_debug.max()
-
-st.caption(
-    f"Valid Registration Dates: {valid_reg_count:,} | "
-    f"< 3 months: {last_3m:,} | "
-    f"< 6 months: {last_6m:,} | "
-    f"< 1 year: {last_1y:,} | "
-    f"Earliest: {earliest_reg.strftime('%m/%d/%Y') if pd.notna(earliest_reg) else 'N/A'} | "
-    f"Latest: {latest_reg.strftime('%m/%d/%Y') if pd.notna(latest_reg) else 'N/A'}"
-)
+if pd.notna(latest_reg):
+    st.caption(f"Newest registration date in file: {latest_reg.strftime('%m/%d/%Y')}")
 
 
 if new_reg_pick != "(Any)":
-    today = pd.Timestamp.today().normalize()
     reg_dates = pd.to_datetime(filtered["_RegistrationDate"], errors="coerce")
     valid_mask = reg_dates.notna()
-    if new_reg_pick == "Less than 3 months":
-        cutoff = today - pd.DateOffset(months=3)
-    elif new_reg_pick == "Less than 6 months":
-        cutoff = today - pd.DateOffset(months=6)
+    latest_reg = reg_dates.max()
+
+    if pd.notna(latest_reg):
+        if new_reg_pick == "Newest 3 months in file":
+            cutoff = latest_reg - pd.DateOffset(months=3)
+        elif new_reg_pick == "Newest 6 months in file":
+            cutoff = latest_reg - pd.DateOffset(months=6)
+        else:
+            cutoff = latest_reg - pd.DateOffset(years=1)
+
+        filtered = filtered[valid_mask & (reg_dates >= cutoff)]
     else:
-        cutoff = today - pd.DateOffset(years=1)
-    filtered = filtered[valid_mask & (reg_dates >= cutoff)]
+        filtered = filtered.iloc[0:0]
 if vote_history_pick:
     filtered = filtered[filtered["_VoteHistory"].astype(str).isin(vote_history_pick)]
 
