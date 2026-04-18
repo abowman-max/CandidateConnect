@@ -19,14 +19,14 @@ GENDER_COLOR_RANGE = ["#7a1523","#4b4f54","#b98088","#9b9da1","#d8b6bb"]
 
 st.markdown("""
 <style>
-.block-container {padding-top: .95rem; padding-bottom: .75rem; max-width: 1600px;}
+.block-container {padding-top: 1.35rem; padding-bottom: .75rem; max-width: 1600px;}
 .top-shell, .section-card, .chart-card, .table-card, .export-card, .metric-card {
     border: 1px solid #ded7d7;
     border-radius: 14px;
     background: white;
     box-shadow: 0 1px 3px rgba(0,0,0,.04);
 }
-.top-shell {padding: 1rem 1rem .95rem 1rem; margin-bottom: .95rem; overflow: visible;}
+.top-shell {padding: 1.2rem 1rem 1rem 1rem; margin-top: .35rem; margin-bottom: .95rem; overflow: visible;}
 .section-card, .chart-card, .table-card, .export-card {padding: .8rem .9rem; margin-bottom: .8rem;}
 .metric-card {padding: .6rem .7rem; height: 94px; display:flex; flex-direction:column; justify-content:center;}
 .metric-label {font-size: 11px; color: #666; margin-bottom: .12rem;}
@@ -58,8 +58,8 @@ section[data-testid="stSidebar"] {border-right: 1px solid #e7e0e0;}
 .brand-sub {font-size: 11px; color:#46556c; font-weight:700;}
 .brand-status {font-size: 10px; color:#6a7280; margin-top:.28rem;}
 .powered-by {font-size:10px; color:#777; margin-bottom:.18rem; text-align:center; font-weight:700;}
-.logo-cc {max-width:175px; height:auto; display:block;}
-.logo-tss {max-width:112px; height:auto; display:block; margin:0 auto;}
+.logo-cc {max-width:168px; height:auto; display:block;}
+.logo-tss {max-width:102px; height:auto; display:block; margin:0 auto;}
 .loading-banner {font-size:12px; font-weight:600; color:#245280;}
 .section-divider {height:1px; background:linear-gradient(to right, rgba(0,0,0,0), #d7d1d1 12%, #d7d1d1 88%, rgba(0,0,0,0)); margin:.5rem 0 .8rem 0;}
 @media (max-width: 1100px) {
@@ -541,16 +541,21 @@ area_choices = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", 
 if area_choices:
     selected_area = st.selectbox("Area", area_choices, label_visibility="collapsed")
     area_df = build_area_summary(filtered, selected_area).copy()
-    st.dataframe(
-        area_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            selected_area: st.column_config.TextColumn(selected_area, width="medium"),
-            "Individuals": st.column_config.NumberColumn("Individuals", format="%,d"),
-            "Households": st.column_config.NumberColumn("Households", format="%,d"),
-        },
+    area_df["Individuals"] = pd.to_numeric(area_df["Individuals"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
+    area_df["Households"] = pd.to_numeric(area_df["Households"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
+    rows_html = "".join(
+        f"<tr><td class='label-cell'>{row[selected_area]}</td><td class='num-cell'>{row['Individuals']}</td><td class='num-cell'>{row['Households']}</td></tr>"
+        for _, row in area_df.iterrows()
     )
+    table_html = f"""
+    <table class='cc-mini-table' style='font-size:12px;'>
+      <thead>
+        <tr><th style='text-align:left'>{selected_area}</th><th>Individuals</th><th>Households</th></tr>
+      </thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+    """
+    st.markdown(table_html, unsafe_allow_html=True)
 else:
     st.caption("No area columns found")
 st.markdown('</div>', unsafe_allow_html=True)
