@@ -530,8 +530,9 @@ with st.sidebar:
             vh_type = st.selectbox("Election Type", type_options_full, index=type_options_full.index(st.session_state.active_filters.get("vh_type", "(Any)")) if st.session_state.active_filters.get("vh_type", "(Any)") in type_options_full else 0)
             vh_method = st.selectbox("Vote Method", method_options, index=method_options.index(st.session_state.active_filters.get("vh_method", "(Any)")) if st.session_state.active_filters.get("vh_method", "(Any)") in method_options else 0)
 
-            use_new_reg_filter = st.checkbox("Use Newly Registered Filter", value=st.session_state.active_filters.get("use_new_reg_filter", False))
-            new_reg_months = st.slider("Registered within last X months", 1, 24, st.session_state.active_filters.get("new_reg_months", 12))
+            use_new_reg_filter = st.checkbox("Filter by Recently Registered", value=st.session_state.active_filters.get("use_new_reg_filter", False))
+            new_reg_months = st.slider("Registered in the last X months", 1, 24, st.session_state.active_filters.get("new_reg_months", 12))
+            st.caption("Based on most recent registration date in the file")
             vote_history_pick = st.multiselect("Vote History", vote_history_vals, default=st.session_state.active_filters.get("vote_history_pick", [])) if vote_history_vals else []
 
         with st.expander("Mail In Ballots", expanded=False):
@@ -653,8 +654,6 @@ if age_slider is not None:
 
 reg_debug = pd.to_datetime(filtered["_RegistrationDate"], errors="coerce")
 latest_reg = reg_debug.max()
-if pd.notna(latest_reg):
-    st.caption(f"Newest registration date in file: {latest_reg.strftime('%m/%d/%Y')}")
 
 
 if use_new_reg_filter:
