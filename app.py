@@ -19,19 +19,19 @@ GENDER_COLOR_RANGE = ["#7a1523","#4b4f54","#b98088","#9b9da1","#d8b6bb"]
 
 st.markdown("""
 <style>
-.block-container {padding-top: .7rem; padding-bottom: .75rem; max-width: 1600px;}
+.block-container {padding-top: .95rem; padding-bottom: .75rem; max-width: 1600px;}
 .top-shell, .section-card, .chart-card, .table-card, .export-card, .metric-card {
     border: 1px solid #ded7d7;
     border-radius: 14px;
     background: white;
     box-shadow: 0 1px 3px rgba(0,0,0,.04);
 }
-.top-shell {padding: .85rem 1rem; margin-bottom: .8rem;}
+.top-shell {padding: 1rem 1rem .95rem 1rem; margin-bottom: .95rem; overflow: visible;}
 .section-card, .chart-card, .table-card, .export-card {padding: .8rem .9rem; margin-bottom: .8rem;}
-.metric-card {padding: .55rem .7rem; height: 106px; display:flex; flex-direction:column; justify-content:center;}
+.metric-card {padding: .6rem .7rem; height: 94px; display:flex; flex-direction:column; justify-content:center;}
 .metric-label {font-size: 11px; color: #666; margin-bottom: .12rem;}
 .metric-value {font-size: 1.55rem; font-weight: 700; color: #24303f; line-height: 1.1;}
-.small-header {font-size: 13px; font-weight: 700; color: #1f2530; margin-bottom: .35rem;}
+.small-header {font-size: 15px; font-weight: 800; color: #1b2431; margin-bottom: .45rem;}
 .tiny-muted {font-size: 10px; color: #666;}
 .export-note {font-size:10px; color:#666; margin-top:.1rem;}
 .stDownloadButton > button, .stButton > button {
@@ -44,23 +44,24 @@ div[data-testid="stDataFrame"] [role="row"] {min-height: 28px !important;}
 section[data-testid="stSidebar"] .block-container {padding-top: 1rem;}
 section[data-testid="stSidebar"] {border-right: 1px solid #e7e0e0;}
 .cc-mini-table {width:100%; border-collapse:collapse; font-size:11px; margin-top:.35rem;}
-.cc-mini-table th {text-align:center; padding:4px 6px; color:#4c5668; font-weight:700; border-bottom:1px solid #ece7e7;}
+.cc-mini-table th {text-align:center; padding:4px 6px; color:#364152; font-weight:800; border-bottom:1px solid #ece7e7;}
 .cc-mini-table td {padding:4px 6px; border-bottom:1px solid #f0ebeb;}
 .cc-mini-table td.label-cell {text-align:left;}
 .cc-mini-table td.num-cell {text-align:center;}
 .cc-mini-table tr.total-row td {font-weight:700; border-top:1px solid #dcd6d6;}
 .cc-swatch {display:inline-block; width:9px; height:9px; border-radius:2px; vertical-align:middle; margin-right:8px; position:relative; top:-1px; border:1px solid rgba(0,0,0,.08);}
-.brand-grid {display:grid; grid-template-columns: 180px 1fr 180px; gap:16px; align-items:center;}
-.brand-left {display:flex; align-items:center; justify-content:flex-start;}
+.brand-grid {display:grid; grid-template-columns: 200px 1fr 170px; gap:18px; align-items:center;}
+.brand-left {display:flex; align-items:center; justify-content:flex-start; min-height:78px;}
 .brand-center {display:flex; flex-direction:column; justify-content:center;}
-.brand-right {display:flex; flex-direction:column; align-items:center; justify-content:center;}
+.brand-right {display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:78px;}
 .brand-title {font-size: 24px; font-weight: 800; color:#153d73; line-height:1.05; margin-bottom:.12rem;}
-.brand-sub {font-size: 11px; color:#5d6778; font-weight:600;}
-.brand-status {font-size: 10px; color:#6a7280; margin-top:.22rem;}
-.powered-by {font-size:10px; color:#777; margin-bottom:.1rem; text-align:center;}
-.logo-cc {max-width:100%; height:auto; display:block;}
-.logo-tss {max-width:110px; height:auto; display:block;}
+.brand-sub {font-size: 11px; color:#46556c; font-weight:700;}
+.brand-status {font-size: 10px; color:#6a7280; margin-top:.28rem;}
+.powered-by {font-size:10px; color:#777; margin-bottom:.18rem; text-align:center; font-weight:700;}
+.logo-cc {max-width:175px; height:auto; display:block;}
+.logo-tss {max-width:112px; height:auto; display:block; margin:0 auto;}
 .loading-banner {font-size:12px; font-weight:600; color:#245280;}
+.section-divider {height:1px; background:linear-gradient(to right, rgba(0,0,0,0), #d7d1d1 12%, #d7d1d1 88%, rgba(0,0,0,0)); margin:.5rem 0 .8rem 0;}
 @media (max-width: 1100px) {
   .brand-grid {grid-template-columns: 1fr; gap:10px;}
   .brand-left, .brand-right {justify-content:center;}
@@ -427,6 +428,10 @@ def file_modified_text(path: Path) -> str:
         return "Google Drive source"
 
 
+def divider():
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+
 cc_logo_uri = img_to_data_uri(CC_LOGO)
 tss_logo_uri = img_to_data_uri(TSS_LOGO)
 
@@ -504,6 +509,8 @@ for col, (label, value) in zip(metric_cols, metric_values):
     with col:
         st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
 
+divider()
+
 chart_cols = st.columns(3, gap="medium")
 
 party_df = filtered["Party"].value_counts().rename_axis("Party").reset_index(name="Count") if "Party" in filtered.columns else pd.DataFrame(columns=["Party", "Count"])
@@ -526,6 +533,8 @@ with chart_cols[2]:
     pie_chart_with_table(age_df, "Age Range", "Count", "Age Range Breakdown", "age")
     st.markdown('</div>', unsafe_allow_html=True)
 
+divider()
+
 st.markdown('<div class="table-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Counts by Area</div>', unsafe_allow_html=True)
 area_choices = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in filtered.columns]
@@ -546,10 +555,14 @@ else:
     st.caption("No area columns found")
 st.markdown('</div>', unsafe_allow_html=True)
 
+divider()
+
 st.markdown('<div class="table-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Preview</div>', unsafe_allow_html=True)
 st.dataframe(filtered.head(100), use_container_width=True, hide_index=True)
 st.markdown('</div>', unsafe_allow_html=True)
+
+divider()
 
 st.markdown('<div class="export-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
