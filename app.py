@@ -168,8 +168,8 @@ def load_data():
     df["_NewReg"] = normalize_boolish(df["TAG0003_New_Reg"]) if "TAG0003_New_Reg" in df.columns else ""
     df["_VoteHistory"] = normalize_vote_history_value(df["V4A"]) if "V4A" in df.columns else ""
 
-    vh_cols = [c for c in df.columns if str(c).endswith("_VH")]
-    for c in vh_cols:
+    vm_cols = [c for c in df.columns if str(c).endswith("_VM")]
+    for c in vm_cols:
         df[f"_{c}"] = normalize_vote_history_value(df[c])
 
     df["_MBPerm"] = normalize_boolish(df["MB_PERM"]) if "MB_PERM" in df.columns else ""
@@ -499,17 +499,20 @@ with st.sidebar:
     with st.expander("Vote History", expanded=False):
         new_reg_vals = sorted([v for v in df["_NewReg"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
         vote_history_vals = sorted([v for v in df["_VoteHistory"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
-        vh_cols = [c for c in df.columns if str(c).endswith("_VH")]
-        
-        vh_cols = [c for c in df.columns if str(c).endswith("_VH")]
-        years = sorted(list(set([c[1:3] for c in vh_cols])))
-        types = sorted(list(set([c[0] for c in vh_cols])))
 
-        vh_year = st.selectbox("Year", ["(Any)"] + years)
-        vh_type = st.selectbox("Election Type", ["(Any)"] + types)
+        vm_cols = [c for c in df.columns if str(c).endswith("_VM") and len(str(c)) >= 4]
+        year_vals = sorted(list(set([f"20{str(c)[1:3]}" for c in vm_cols if str(c)[1:3].isdigit()])))
+        type_map = {"G": "General Election", "P": "Primary Election"}
+        type_options = []
+        for c in vm_cols:
+            t = str(c)[0].upper()
+            if t in type_map and type_map[t] not in type_options:
+                type_options.append(type_map[t])
+
+        vh_year = st.selectbox("Year", ["(Any)"] + year_vals)
+        vh_type = st.selectbox("Election Type", ["(Any)"] + type_options)
         vh_method = st.selectbox("Vote Method", ["(Any)", "AP", "MB", "P", "Did Not Vote"])
 
-        vh_field_vals = []
         new_reg_pick = st.multiselect("Newly Registered", new_reg_vals) if new_reg_vals else []
         vote_history_pick = st.multiselect("Vote History", vote_history_vals) if vote_history_vals else []
 
@@ -592,6 +595,35 @@ if vh_year != "(Any)" or vh_type != "(Any)" or vh_method != "(Any)":
     filtered = filtered[filtered.apply(match_row, axis=1)]
 
     filtered = filtered[filtered[f"_{selected_vh_col}"].astype(str).isin(vote_history_by_election_pick)]
+
+if new_reg_pick:
+    filtered = filtered[filtered["_NewReg"].astype(str).isin(new_reg_pick)]
+if vote_history_pick:
+    filtered = filtered[filtered["_VoteHistory"].astype(str).isin(vote_history_pick)]
+if vh_year != "(Any)" or vh_type != "(Any)" or vh_method != "(Any)":
+    vm_cols = [c for c in filtered.columns if str(c).endswith("_VM") and len(str(c)) >= 4]
+    selected_cols = []
+    type_reverse_map = {"General Election": "G", "Primary Election": "P"}
+    for c in vm_cols:
+        c_str = str(c)
+        col_type = c_str[0].upper()
+        col_year = f"20{c_str[1:3]}" if c_str[1:3].isdigit() else ""
+        type_match = vh_type == "(Any)" or col_type == type_reverse_map.get(vh_type, "")
+        year_match = vh_year == "(Any)" or col_year == vh_year
+        if type_match and year_match:
+            selected_cols.append(c)
+    if selected_cols:
+        if vh_method == "(Any)":
+            row_mask = filtered[selected_cols].astype(str).apply(lambda row: any(str(v).strip() not in {"", "nan", "None"} for v in row), axis=1)
+            filtered = filtered[row_mask]
+        elif vh_method == "Did Not Vote":
+            row_mask = filtered[selected_cols].astype(str).apply(lambda row: all(str(v).strip() in {"", "nan", "None"} for v in row), axis=1)
+            filtered = filtered[row_mask]
+        else:
+            row_mask = filtered[selected_cols].astype(str).apply(lambda row: any(str(v).strip().upper() == vh_method for v in row), axis=1)
+            filtered = filtered[row_mask]
+    else:
+        filtered = filtered.iloc[0:0]
 
 if mib_perm_pick:
     filtered = filtered[filtered["_MBPerm"].astype(str).isin(mib_perm_pick)]
