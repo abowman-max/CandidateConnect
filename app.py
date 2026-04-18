@@ -649,7 +649,23 @@ if age_range_pick:
 if age_slider is not None:
     filtered = filtered[(filtered["_AgeNum"] >= age_slider[0]) & (filtered["_AgeNum"] <= age_slider[1])]
 
-st.caption(f"Valid Registration Dates: {pd.to_datetime(filtered['_RegistrationDate'], errors='coerce').notna().sum():,}")
+reg_debug = pd.to_datetime(filtered["_RegistrationDate"], errors="coerce")
+valid_reg_count = reg_debug.notna().sum()
+last_3m = ((reg_debug.notna()) & (reg_debug >= (pd.Timestamp.today().normalize() - pd.DateOffset(months=3)))).sum()
+last_6m = ((reg_debug.notna()) & (reg_debug >= (pd.Timestamp.today().normalize() - pd.DateOffset(months=6)))).sum()
+last_1y = ((reg_debug.notna()) & (reg_debug >= (pd.Timestamp.today().normalize() - pd.DateOffset(years=1)))).sum()
+earliest_reg = reg_debug.min()
+latest_reg = reg_debug.max()
+
+st.caption(
+    f"Valid Registration Dates: {valid_reg_count:,} | "
+    f"< 3 months: {last_3m:,} | "
+    f"< 6 months: {last_6m:,} | "
+    f"< 1 year: {last_1y:,} | "
+    f"Earliest: {earliest_reg.strftime('%m/%d/%Y') if pd.notna(earliest_reg) else 'N/A'} | "
+    f"Latest: {latest_reg.strftime('%m/%d/%Y') if pd.notna(latest_reg) else 'N/A'}"
+)
+
 
 if new_reg_pick != "(Any)":
     today = pd.Timestamp.today().normalize()
