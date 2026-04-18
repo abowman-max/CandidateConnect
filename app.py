@@ -107,6 +107,15 @@ def fmt_pct(v: float) -> str:
     return f"{rounded:.1f}%"
 
 
+def normalize_vote_history_value(series: pd.Series) -> pd.Series:
+    return series.astype(str).str.strip().str.upper().replace({"NAN": "", "NONE": ""})
+
+
+def normalize_boolish(series: pd.Series) -> pd.Series:
+    s = series.astype(str).str.strip().str.upper()
+    return s.replace({"TRUE":"Yes","FALSE":"No","Y":"Yes","N":"No","1":"Yes","0":"No","NAN":"","NONE":"","T":"Yes","F":"No"})
+
+
 @st.cache_resource(show_spinner=True)
 def load_data():
     url = f"https://drive.google.com/uc?id={DRIVE_FILE_ID}"
@@ -122,7 +131,7 @@ def load_data():
     else:
         df["_Status"] = "A"
 
-    for col in ["County", "Municipality", "Precinct", "School District", "CalculatedParty", "USC", "STS", "STH"]:
+    for col in ["County", "Municipality", "Precinct", "School District", "CalculatedParty", "USC", "STS", "STH", "HH-Party"]:
         if col in df.columns:
             df[col] = df[col].astype("object").map(smart_title)
 
@@ -155,6 +164,18 @@ def load_data():
             df[f"_Has{col}"] = value_present(df[col])
         else:
             df[f"_Has{col}"] = False
+
+    df["_NewReg"] = normalize_boolish(df["TAG0003_New_Reg"]) if "TAG0003_New_Reg" in df.columns else ""
+    df["_VoteHistory"] = normalize_vote_history_value(df["V4A"]) if "V4A" in df.columns else ""
+
+    vh_cols = [c for c in df.columns if str(c).endswith("_VH")]
+    for c in vh_cols:
+        df[f"_{c}"] = normalize_vote_history_value(df[c])
+
+    df["_MBPerm"] = normalize_boolish(df["MB_PERM"]) if "MB_PERM" in df.columns else ""
+    df["_MIBProb"] = pd.to_numeric(df["MMB_AProp_Score"], errors="coerce") if "MMB_AProp_Score" in df.columns else pd.NA
+    df["_MIBApplied"] = normalize_boolish(df["MIB_Applied"]) if "MIB_Applied" in df.columns else ""
+    df["_MIBVoted"] = normalize_boolish(df["MIB_BALLOT"]) if "MIB_BALLOT" in df.columns else ""
 
     return df.reset_index(drop=True)
 
@@ -221,7 +242,7 @@ def build_address_line2(frame: pd.DataFrame) -> pd.Series:
     return apt.map(lambda x: f"Apt {x.strip()}" if str(x).strip() else "")
 
 
-def first_existing_column(frame: pd.DataFrame, candidates: list[str]) -> str | None:
+def first_existing_column(frame: pd.DataFrame, candidates):
     for col in candidates:
         if col in frame.columns:
             return col
@@ -248,7 +269,7 @@ def resolve_city_state_zip(frame: pd.DataFrame):
     return city, state, zipcode
 
 
-def resolve_voter_id_column(frame: pd.DataFrame) -> str | None:
+def resolve_voter_id_column(frame: pd.DataFrame):
     priority = ["PA ID Number", "State Voter ID", "Voter ID", "VoterID", "PA Voter ID"]
     for col in priority:
         if col in frame.columns:
@@ -268,25 +289,20 @@ def household_display_name(group: pd.DataFrame) -> str:
         return ""
     if len(names) == 1:
         return names[0]
-
     last_names = []
     for _, row in rows.iterrows():
         ln = clean_text(row.get("LastName", ""))
         if ln:
             last_names.append(smart_title(ln))
-
     unique_last = sorted(set([ln for ln in last_names if ln]))
     if len(unique_last) == 1:
         return f"{unique_last[0]} Household"
-
     unique_names = []
     for n in names:
         if n not in unique_names:
             unique_names.append(n)
-
     if len(unique_names) >= 2:
         return " & ".join(unique_names[:2])
-
     return unique_names[0]
 
 
@@ -296,16 +312,13 @@ def build_mail_export(frame: pd.DataFrame, householded: bool) -> pd.DataFrame:
     out["_AddressLine1"] = build_address_line1(out)
     out["_AddressLine2"] = build_address_line2(out)
     out["_HouseholdKey"] = household_key(out)
-
     city, state, zipcode = resolve_city_state_zip(out)
     out["_City"] = city
     out["_State"] = state
     out["_Zip"] = zipcode
-
     for col in ["County", "Municipality", "Precinct"]:
         if col not in out.columns:
             out[col] = ""
-
     if not householded:
         export_df = pd.DataFrame({
             "MailName": out["_FullName"],
@@ -319,7 +332,6 @@ def build_mail_export(frame: pd.DataFrame, householded: bool) -> pd.DataFrame:
             "Precinct": out["Precinct"].map(smart_title),
         })
         return export_df.reset_index(drop=True)
-
     rows = []
     for _, group in out.groupby("_HouseholdKey", dropna=False, sort=False):
         first = group.iloc[0]
@@ -342,21 +354,17 @@ def build_texting_export(frame: pd.DataFrame) -> pd.DataFrame:
     out = frame.copy()
     if "Mobile" not in out.columns:
         return pd.DataFrame(columns=["VoterID", "FirstName", "MiddleName", "LastName", "FullName", "Mobile", "County", "Precinct"])
-
     out["Mobile"] = out["Mobile"].astype(str).str.replace(r"\D", "", regex=True)
     out = out[out["Mobile"].str.strip() != ""].copy()
-
     voter_col = resolve_voter_id_column(out)
     out["VoterID"] = out[voter_col].astype(str).str.strip() if voter_col else ""
     out["FirstName"] = out["FirstName"].map(smart_title) if "FirstName" in out.columns else ""
     out["MiddleName"] = out["MiddleName"].map(smart_title) if "MiddleName" in out.columns else ""
     out["LastName"] = out["LastName"].map(smart_title) if "LastName" in out.columns else ""
     out["FullName"] = out.apply(full_name_from_row, axis=1)
-
     for col in ["County", "Precinct"]:
         if col not in out.columns:
             out[col] = ""
-
     export_df = out[["VoterID", "FirstName", "MiddleName", "LastName", "FullName", "Mobile", "County", "Precinct"]].copy()
     export_df["County"] = export_df["County"].map(smart_title)
     export_df["Precinct"] = export_df["Precinct"].map(smart_title)
@@ -370,7 +378,7 @@ def dataframe_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Export") -> by
     return output.getvalue()
 
 
-def make_summary_table(df_chart: pd.DataFrame, label_col: str, value_col: str, colors: list[str]) -> str:
+def make_summary_table(df_chart: pd.DataFrame, label_col: str, value_col: str, colors):
     total = pd.to_numeric(df_chart[value_col], errors="coerce").fillna(0).sum()
     headers = "<tr><th></th><th>{}</th><th>{}</th><th>%</th></tr>".format(label_col, value_col)
     rows = []
@@ -382,9 +390,7 @@ def make_summary_table(df_chart: pd.DataFrame, label_col: str, value_col: str, c
             f"<tr><td class='num-cell'><span class='cc-swatch' style='background:{color};'></span></td>"
             f"<td class='label-cell'>{row[label_col]}</td><td class='num-cell'>{val:,.0f}</td><td class='num-cell'>{fmt_pct(pct)}</td></tr>"
         )
-    rows.append(
-        f"<tr class='total-row'><td></td><td class='label-cell'>Total</td><td class='num-cell'>{total:,.0f}</td><td class='num-cell'>100%</td></tr>"
-    )
+    rows.append(f"<tr class='total-row'><td></td><td class='label-cell'>Total</td><td class='num-cell'>{total:,.0f}</td><td class='num-cell'>100%</td></tr>")
     return f"<table class='cc-mini-table'><thead>{headers}</thead><tbody>{''.join(rows)}</tbody></table>"
 
 
@@ -393,13 +399,11 @@ def pie_chart_with_table(df_chart: pd.DataFrame, label_col: str, value_col: str,
     if df_chart.empty:
         st.caption("No data")
         return
-
     chart_df = df_chart.copy()
     chart_df[value_col] = pd.to_numeric(chart_df[value_col], errors="coerce").fillna(0)
     chart_df = chart_df.sort_values(value_col, ascending=False).reset_index(drop=True)
     total = chart_df[value_col].sum()
     chart_df["Percent"] = 0 if total == 0 else (chart_df[value_col] / total) * 100
-
     domain = chart_df[label_col].astype(str).tolist()
     if color_mode == "party":
         colors = [PARTY_COLOR_MAP.get(v, "#757575") for v in domain]
@@ -407,17 +411,11 @@ def pie_chart_with_table(df_chart: pd.DataFrame, label_col: str, value_col: str,
         colors = AGE_COLOR_RANGE[:len(domain)]
     else:
         colors = GENDER_COLOR_RANGE[:len(domain)]
-
     chart = alt.Chart(chart_df).mark_arc(innerRadius=18, outerRadius=60).encode(
         theta=alt.Theta(field=value_col, type="quantitative"),
         color=alt.Color(field=label_col, type="nominal", scale=alt.Scale(domain=domain, range=colors), legend=None),
-        tooltip=[
-            alt.Tooltip(f"{label_col}:N"),
-            alt.Tooltip(f"{value_col}:Q", format=","),
-            alt.Tooltip("Percent:Q", format=".1f"),
-        ]
+        tooltip=[alt.Tooltip(f"{label_col}:N"), alt.Tooltip(f"{value_col}:Q", format=","), alt.Tooltip("Percent:Q", format=".1f")]
     ).properties(height=220)
-
     st.altair_chart(chart, use_container_width=True)
     st.markdown(make_summary_table(chart_df, label_col, value_col, colors), unsafe_allow_html=True)
 
@@ -457,18 +455,13 @@ status_box.empty()
 header_html = f"""
 <div class="top-shell">
   <div class="brand-grid">
-    <div class="brand-left">
-      {f'<img class="logo-cc" src="{cc_logo_uri}"/>' if cc_logo_uri else ''}
-    </div>
+    <div class="brand-left">{f'<img class="logo-cc" src="{cc_logo_uri}"/>' if cc_logo_uri else ''}</div>
     <div class="brand-center">
       <div class="brand-title">Candidate Connect</div>
       <div class="brand-sub">Voter Data &amp; Engagement Platform</div>
       <div class="brand-status">Data Source: Google Drive &nbsp;&nbsp;|&nbsp;&nbsp; Last Loaded File: {file_modified_text(LOCAL_PARQUET)} &nbsp;&nbsp;|&nbsp;&nbsp; Rows Available: {len(df):,}</div>
     </div>
-    <div class="brand-right">
-      <div class="powered-by">Powered By</div>
-      {f'<img class="logo-tss" src="{tss_logo_uri}"/>' if tss_logo_uri else ''}
-    </div>
+    <div class="brand-right"><div class="powered-by">Powered By</div>{f'<img class="logo-tss" src="{tss_logo_uri}"/>' if tss_logo_uri else ''}</div>
   </div>
 </div>
 """
@@ -490,15 +483,62 @@ with st.sidebar:
         party_vals = sorted([v for v in df["Party"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "Party" in df.columns else []
         gender_vals = sorted([v for v in df["_Gender"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
         age_range_vals = sorted([v for v in df["_AgeRange"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+        hh_party_vals = sorted([v for v in df["HH-Party"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "HH-Party" in df.columns else []
+        calc_party_vals = sorted([v for v in df["CalculatedParty"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "CalculatedParty" in df.columns else []
         party_pick = st.multiselect("Party", party_vals) if party_vals else []
+        hh_party_pick = st.multiselect("Household Party (HH-Party)", hh_party_vals) if hh_party_vals else []
+        calc_party_pick = st.multiselect("Calculated Party (CalculatedParty)", calc_party_vals) if calc_party_vals else []
         gender_pick = st.multiselect("Gender", gender_vals) if gender_vals else []
         age_range_pick = st.multiselect("Age Range", age_range_vals) if age_range_vals else []
-
         age_slider = None
         if pd.to_numeric(df["_AgeNum"], errors="coerce").notna().any():
             age_min = int(pd.to_numeric(df["_AgeNum"], errors="coerce").min())
             age_max = int(pd.to_numeric(df["_AgeNum"], errors="coerce").max())
             age_slider = st.slider("Age", age_min, age_max, (age_min, age_max))
+
+    with st.expander("Vote History", expanded=False):
+        new_reg_vals = sorted([v for v in df["_NewReg"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+        vote_history_vals = sorted([v for v in df["_VoteHistory"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+        vh_cols = [c for c in df.columns if str(c).endswith("_VH")]
+        selected_vh_col = st.selectbox("Vote History by Election Field", ["(None)"] + vh_cols)
+        vh_field_vals = []
+        if selected_vh_col != "(None)":
+            vh_field_vals = sorted([v for v in df[f"_{selected_vh_col}"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+        new_reg_pick = st.multiselect("Newly Registered (TAG0003_New_Reg)", new_reg_vals) if new_reg_vals else []
+        vote_history_pick = st.multiselect("Vote History (V4A)", vote_history_vals) if vote_history_vals else []
+        vote_history_by_election_pick = st.multiselect("Vote History by Election", vh_field_vals) if vh_field_vals else []
+
+    with st.expander("Mail In Ballots", expanded=False):
+        mib_perm_vals = sorted([v for v in df["_MBPerm"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+        mib_applied_vals = sorted([v for v in df["_MIBApplied"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+        mib_voted_vals = sorted([v for v in df["_MIBVoted"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+        mib_perm_pick = st.multiselect("MIB Perm (MB_PERM)", mib_perm_vals) if mib_perm_vals else []
+        mib_applied_pick = st.multiselect("MIB Applied (MIB_Applied)", mib_applied_vals) if mib_applied_vals else []
+        mib_voted_pick = st.multiselect("MIB Voted (MIB_BALLOT)", mib_voted_vals) if mib_voted_vals else []
+        mib_prob_slider = None
+        if pd.to_numeric(df["_MIBProb"], errors="coerce").notna().any():
+            mib_min = float(pd.to_numeric(df["_MIBProb"], errors="coerce").min())
+            mib_max = float(pd.to_numeric(df["_MIBProb"], errors="coerce").max())
+            mib_prob_slider = st.slider("MIB Probability Score (MMB_AProp_Score)", mib_min, mib_max, (mib_min, mib_max))
+
+
+    with st.expander("Tags", expanded=False):
+        tag_map = {
+            "Pro 2A": "TAG0001_Pro2A",
+            "FOAC Target": "TAG00011_Pro2A_FOAC_TARG",
+            "MB Target": "TAG0002_MB_Target",
+            "Pro Life": "TAG0004_ProLife",
+            "Pro Labor": "TAG0005_ProLabor",
+            "Rep Donor": "TAG0006_RepDonor",
+            "Dem Donor": "TAG0007_DemDonor",
+            "Trump Donor": "TAG0008_TrumpDonor",
+            "PA Donor": "TAG00090_PADonor",
+            "Federal Donor": "TAG00100_FedDonor",
+            "Any Donor": "TAG00110_AllDonor",
+            "Teacher": "TAG0014_Teacher",
+            "Retired Teacher": "TAG0015_RetiredTeacher"
+        }
+        tag_choice = st.selectbox("Select Tag", ["(None)"] + list(tag_map.keys()))
 
     with st.expander("Contact Filters", expanded=False):
         has_email = st.selectbox("Email", ["All", "Has Email", "No Email"])
@@ -513,24 +553,48 @@ for col, picked in geo_selections.items():
 
 if party_pick:
     filtered = filtered[filtered["Party"].astype(str).isin(party_pick)]
+if hh_party_pick and "HH-Party" in filtered.columns:
+    filtered = filtered[filtered["HH-Party"].astype(str).isin(hh_party_pick)]
+if calc_party_pick and "CalculatedParty" in filtered.columns:
+    filtered = filtered[filtered["CalculatedParty"].astype(str).isin(calc_party_pick)]
 if gender_pick:
     filtered = filtered[filtered["_Gender"].astype(str).isin(gender_pick)]
 if age_range_pick:
     filtered = filtered[filtered["_AgeRange"].astype(str).isin(age_range_pick)]
-
 if age_slider is not None:
     filtered = filtered[(filtered["_AgeNum"] >= age_slider[0]) & (filtered["_AgeNum"] <= age_slider[1])]
+
+if new_reg_pick:
+    filtered = filtered[filtered["_NewReg"].astype(str).isin(new_reg_pick)]
+if vote_history_pick:
+    filtered = filtered[filtered["_VoteHistory"].astype(str).isin(vote_history_pick)]
+if selected_vh_col != "(None)" and vote_history_by_election_pick:
+    filtered = filtered[filtered[f"_{selected_vh_col}"].astype(str).isin(vote_history_by_election_pick)]
+
+if mib_perm_pick:
+    filtered = filtered[filtered["_MBPerm"].astype(str).isin(mib_perm_pick)]
+if mib_applied_pick:
+    filtered = filtered[filtered["_MIBApplied"].astype(str).isin(mib_applied_pick)]
+if mib_voted_pick:
+    filtered = filtered[filtered["_MIBVoted"].astype(str).isin(mib_voted_pick)]
+if mib_prob_slider is not None:
+    filtered = filtered[(filtered["_MIBProb"] >= mib_prob_slider[0]) & (filtered["_MIBProb"] <= mib_prob_slider[1])]
+
+
+if tag_choice != "(None)":
+    tag_col = tag_map[tag_choice]
+    if tag_col in filtered.columns:
+        tag_series = filtered[tag_col].astype(str).str.strip().str.upper()
+        filtered = filtered[tag_series.isin(["Y", "YES", "TRUE", "1"])]
 
 if has_email == "Has Email":
     filtered = filtered[filtered["_HasEmail"]]
 elif has_email == "No Email":
     filtered = filtered[~filtered["_HasEmail"]]
-
 if has_landline == "Has Landline":
     filtered = filtered[filtered["_HasLandline"]]
 elif has_landline == "No Landline":
     filtered = filtered[~filtered["_HasLandline"]]
-
 if has_mobile == "Has Mobile":
     filtered = filtered[filtered["_HasMobile"]]
 elif has_mobile == "No Mobile":
@@ -555,7 +619,6 @@ for col, (label, value) in zip(metric_cols, metric_values):
 divider()
 
 chart_cols = st.columns(3, gap="medium")
-
 party_df = filtered["Party"].value_counts().rename_axis("Party").reset_index(name="Count") if "Party" in filtered.columns else pd.DataFrame(columns=["Party", "Count"])
 gender_df = filtered["_Gender"].value_counts().rename_axis("Gender").reset_index(name="Count")
 age_series = filtered["_AgeRange"].replace("", pd.NA).dropna()
@@ -565,12 +628,10 @@ with chart_cols[0]:
     st.markdown('<div class="chart-card">', unsafe_allow_html=True)
     pie_chart_with_table(party_df, "Party", "Count", "Party Breakdown", "party")
     st.markdown('</div>', unsafe_allow_html=True)
-
 with chart_cols[1]:
     st.markdown('<div class="chart-card">', unsafe_allow_html=True)
     pie_chart_with_table(gender_df, "Gender", "Count", "Gender Breakdown", "gender")
     st.markdown('</div>', unsafe_allow_html=True)
-
 with chart_cols[2]:
     st.markdown('<div class="chart-card">', unsafe_allow_html=True)
     pie_chart_with_table(age_df, "Age Range", "Count", "Age Range Breakdown", "age")
@@ -590,14 +651,7 @@ if area_choices:
         f"<tr><td class='label-cell'>{row[selected_area]}</td><td class='num-cell'>{row['Individuals']}</td><td class='num-cell'>{row['Households']}</td></tr>"
         for _, row in area_df.iterrows()
     )
-    table_html = f"""
-    <table class='cc-mini-table' style='font-size:12px;'>
-      <thead>
-        <tr><th style='text-align:left'>{selected_area}</th><th>Individuals</th><th>Households</th></tr>
-      </thead>
-      <tbody>{rows_html}</tbody>
-    </table>
-    """
+    table_html = f"<table class='cc-mini-table' style='font-size:12px;'><thead><tr><th style='text-align:left'>{selected_area}</th><th>Individuals</th><th>Households</th></tr></thead><tbody>{rows_html}</tbody></table>"
     st.markdown(table_html, unsafe_allow_html=True)
 else:
     st.caption("No area columns found")
@@ -617,13 +671,11 @@ st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
 st.markdown('<div class="export-note">Web version downloads files directly through your browser.</div>', unsafe_allow_html=True)
 
 ex1, ex2, ex3 = st.columns([1.4, 1, 1])
-
 with ex1:
     household_mode = st.radio("Mailing Mode", ["Not Householded", "Householded"], horizontal=True)
 
 mail_df = build_mail_export(filtered, householded=(household_mode == "Householded"))
 texting_df = build_texting_export(filtered)
-
 mail_csv = mail_df.to_csv(index=False).encode("utf-8")
 mail_xlsx = dataframe_to_excel_bytes(mail_df, "Mail File")
 texting_csv = texting_df.to_csv(index=False).encode("utf-8")
@@ -631,7 +683,6 @@ texting_csv = texting_df.to_csv(index=False).encode("utf-8")
 with ex2:
     st.download_button("Download Mail CSV", data=mail_csv, file_name="candidate_connect_mail_file.csv", mime="text/csv", use_container_width=True)
     st.download_button("Download Mail Excel", data=mail_xlsx, file_name="candidate_connect_mail_file.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-
 with ex3:
     st.download_button("Download Texting CSV", data=texting_csv, file_name="candidate_connect_texting_file.csv", mime="text/csv", use_container_width=True)
     st.caption(f"Mail rows: {len(mail_df):,} | Text rows: {len(texting_df):,}")
