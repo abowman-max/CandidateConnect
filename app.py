@@ -140,6 +140,12 @@ def load_data():
     else:
         df["_AgeNum"] = pd.NA
 
+    reg_col = "RegistrationDate" if "RegistrationDate" in df.columns else ("registrationdate" if "registrationdate" in df.columns else None)
+    if reg_col:
+        df["_RegistrationDate"] = pd.to_datetime(df[reg_col], errors="coerce")
+    else:
+        df["_RegistrationDate"] = pd.NaT
+
     if "Party" in df.columns:
         df["Party"] = df["Party"].astype(str).str.strip().replace({"nan": "O", "None": "O", "": "O", "U": "O"})
 
@@ -504,7 +510,7 @@ with st.sidebar:
                 age_slider = st.slider("Age", age_min, age_max, st.session_state.active_filters.get("age_slider", (age_min, age_max)))
 
         with st.expander("Vote History", expanded=False):
-            new_reg_options = ["(Any)", "Yes", "No"]
+            new_reg_options = ["(Any)", "Less than 3 months", "Less than 6 months", "Less than 1 year"]
             vote_history_vals = sorted([v for v in df["_VoteHistory"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
 
             vm_cols = [c for c in df.columns if str(c).endswith("_VM") and len(str(c)) >= 4]
@@ -644,7 +650,15 @@ if age_slider is not None:
     filtered = filtered[(filtered["_AgeNum"] >= age_slider[0]) & (filtered["_AgeNum"] <= age_slider[1])]
 
 if new_reg_pick != "(Any)":
-    filtered = filtered[filtered["_NewReg"].astype(str) == new_reg_pick]
+    today = pd.Timestamp.today().normalize()
+    reg_dates = pd.to_datetime(filtered["_RegistrationDate"], errors="coerce")
+    if new_reg_pick == "Less than 3 months":
+        cutoff = today - pd.DateOffset(months=3)
+    elif new_reg_pick == "Less than 6 months":
+        cutoff = today - pd.DateOffset(months=6)
+    else:
+        cutoff = today - pd.DateOffset(years=1)
+    filtered = filtered[reg_dates.notna() & (reg_dates >= cutoff)]
 if vote_history_pick:
     filtered = filtered[filtered["_VoteHistory"].astype(str).isin(vote_history_pick)]
 
