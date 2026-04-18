@@ -31,8 +31,8 @@ st.markdown("""
 .metric-card {padding: .6rem .7rem; height: 94px; display:flex; flex-direction:column; justify-content:center;}
 .metric-label {font-size: 11px; color: #666; margin-bottom: .12rem;}
 .metric-value {font-size: 1.55rem; font-weight: 700; color: #24303f; line-height: 1.1;}
-.small-header {font-size: 15px; font-weight: 800; color: #1b2431; margin-bottom: .45rem;}
-.tiny-muted {font-size: 10px; color: #666;}
+.small-header {font-size: 15px; font-weight: 800; color: #162235; margin-bottom: .45rem;}
+.tiny-muted {font-size: 10px; color: #596579;}
 .export-note {font-size:10px; color:#666; margin-top:.1rem;}
 .stDownloadButton > button, .stButton > button {
     width:100%;
@@ -55,13 +55,14 @@ section[data-testid="stSidebar"] {border-right: 1px solid #e7e0e0;}
 .brand-center {display:flex; flex-direction:column; justify-content:center;}
 .brand-right {display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:78px;}
 .brand-title {font-size: 24px; font-weight: 800; color:#153d73; line-height:1.05; margin-bottom:.12rem;}
-.brand-sub {font-size: 11px; color:#46556c; font-weight:700;}
-.brand-status {font-size: 10px; color:#6a7280; margin-top:.28rem;}
+.brand-sub {font-size: 11px; color:#334a6a; font-weight:700;}
+.brand-status {font-size: 11px; color:#506078; margin-top:.28rem; font-weight:600;}
 .powered-by {font-size:10px; color:#777; margin-bottom:.18rem; text-align:center; font-weight:700;}
 .logo-cc {max-width:168px; height:auto; display:block;}
 .logo-tss {max-width:102px; height:auto; display:block; margin:0 auto;}
 .loading-banner {font-size:12px; font-weight:600; color:#245280;}
 .section-divider {height:1px; background:linear-gradient(to right, rgba(0,0,0,0), #d7d1d1 12%, #d7d1d1 88%, rgba(0,0,0,0)); margin:.5rem 0 .8rem 0;}
+.sidebar-note {font-size:10px; color:#687487; margin-top:-.25rem; margin-bottom:.4rem;}
 @media (max-width: 1100px) {
   .brand-grid {grid-template-columns: 1fr; gap:10px;}
   .brand-left, .brand-right {justify-content:center;}
@@ -116,9 +117,12 @@ def load_data():
 
     status_col = "VoterStatus" if "VoterStatus" in df.columns else ("voterstatus" if "voterstatus" in df.columns else None)
     if status_col:
-        df = df[df[status_col].astype(str).str.strip().str.upper() == "A"].copy()
+        df["_Status"] = df[status_col].astype(str).str.strip().str.upper()
+        df = df[df["_Status"] == "A"].copy()
+    else:
+        df["_Status"] = "A"
 
-    for col in ["County", "Municipality", "Precinct", "School District", "CalculatedParty"]:
+    for col in ["County", "Municipality", "Precinct", "School District", "CalculatedParty", "USC", "STS", "STH"]:
         if col in df.columns:
             df[col] = df[col].astype("object").map(smart_title)
 
@@ -146,7 +150,7 @@ def load_data():
     else:
         df["_AgeRange"] = ""
 
-    for col in ["Email", "Landline", "Mobile"]:
+    for col in ["Email", "Landline", "Mobile", "MB_Perm"]:
         if col in df.columns:
             df[f"_Has{col}"] = value_present(df[col])
         else:
@@ -472,26 +476,65 @@ st.markdown(header_html, unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("Filters")
-    filter_cols = [c for c in ["Party", "County", "Municipality", "Precinct"] if c in df.columns]
-    selections = {}
-    for col in filter_cols:
-        vals = df[col].dropna().astype(str).str.strip()
-        vals = sorted([v for v in vals.unique().tolist() if v != ""])
-        selections[col] = st.multiselect(col, vals)
+    st.markdown('<div class="sidebar-note">Expanded filter set from the desktop version is being restored in stages.</div>', unsafe_allow_html=True)
 
-    age_range = None
-    if pd.to_numeric(df["_AgeNum"], errors="coerce").notna().any():
-        age_min = int(pd.to_numeric(df["_AgeNum"], errors="coerce").min())
-        age_max = int(pd.to_numeric(df["_AgeNum"], errors="coerce").max())
-        age_range = st.slider("Age", age_min, age_max, (age_min, age_max))
+    with st.expander("Geography", expanded=True):
+        geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in df.columns]
+        geo_selections = {}
+        for col in geo_cols:
+            vals = df[col].dropna().astype(str).str.strip()
+            vals = sorted([v for v in vals.unique().tolist() if v != ""])
+            geo_selections[col] = st.multiselect(col, vals)
+
+    with st.expander("Voter Details", expanded=True):
+        party_vals = sorted([v for v in df["Party"].dropna().astype(str).str.strip().unique().tolist() if v != ""]) if "Party" in df.columns else []
+        gender_vals = sorted([v for v in df["_Gender"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+        age_range_vals = sorted([v for v in df["_AgeRange"].dropna().astype(str).str.strip().unique().tolist() if v != ""])
+        party_pick = st.multiselect("Party", party_vals) if party_vals else []
+        gender_pick = st.multiselect("Gender", gender_vals) if gender_vals else []
+        age_range_pick = st.multiselect("Age Range", age_range_vals) if age_range_vals else []
+
+        age_slider = None
+        if pd.to_numeric(df["_AgeNum"], errors="coerce").notna().any():
+            age_min = int(pd.to_numeric(df["_AgeNum"], errors="coerce").min())
+            age_max = int(pd.to_numeric(df["_AgeNum"], errors="coerce").max())
+            age_slider = st.slider("Age", age_min, age_max, (age_min, age_max))
+
+    with st.expander("Contact Filters", expanded=False):
+        has_email = st.selectbox("Email", ["All", "Has Email", "No Email"])
+        has_landline = st.selectbox("Landline", ["All", "Has Landline", "No Landline"])
+        has_mobile = st.selectbox("Mobile", ["All", "Has Mobile", "No Mobile"])
 
 filtered = df.copy()
-for col, picked in selections.items():
+
+for col, picked in geo_selections.items():
     if picked:
         filtered = filtered[filtered[col].astype(str).isin(picked)]
 
-if age_range is not None:
-    filtered = filtered[(filtered["_AgeNum"] >= age_range[0]) & (filtered["_AgeNum"] <= age_range[1])]
+if party_pick:
+    filtered = filtered[filtered["Party"].astype(str).isin(party_pick)]
+if gender_pick:
+    filtered = filtered[filtered["_Gender"].astype(str).isin(gender_pick)]
+if age_range_pick:
+    filtered = filtered[filtered["_AgeRange"].astype(str).isin(age_range_pick)]
+
+if age_slider is not None:
+    filtered = filtered[(filtered["_AgeNum"] >= age_slider[0]) & (filtered["_AgeNum"] <= age_slider[1])]
+
+if has_email == "Has Email":
+    filtered = filtered[filtered["_HasEmail"]]
+elif has_email == "No Email":
+    filtered = filtered[~filtered["_HasEmail"]]
+
+if has_landline == "Has Landline":
+    filtered = filtered[filtered["_HasLandline"]]
+elif has_landline == "No Landline":
+    filtered = filtered[~filtered["_HasLandline"]]
+
+if has_mobile == "Has Mobile":
+    filtered = filtered[filtered["_HasMobile"]]
+elif has_mobile == "No Mobile":
+    filtered = filtered[~filtered["_HasMobile"]]
 
 filtered = filtered.reset_index(drop=True)
 
