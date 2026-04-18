@@ -813,33 +813,72 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 divider()
 
-st.markdown('<div class="table-card">', unsafe_allow_html=True)
-st.markdown('<div class="small-header">Preview</div>', unsafe_allow_html=True)
-st.dataframe(filtered.head(100), use_container_width=True, hide_index=True)
-st.markdown('</div>', unsafe_allow_html=True)
-
-divider()
-
 st.markdown('<div class="export-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
-st.markdown('<div class="export-note">Web version downloads files directly through your browser.</div>', unsafe_allow_html=True)
+st.markdown('<div class="export-note">Files are only prepared when you click the button for that export type.</div>', unsafe_allow_html=True)
 
-ex1, ex2, ex3 = st.columns([1.4, 1, 1])
+ex1, ex2, ex3, ex4 = st.columns([1.2, 1, 1, 1])
 with ex1:
     household_mode = st.radio("Mailing Mode", ["Not Householded", "Householded"], horizontal=True)
+    st.caption(f"Filtered rows: {len(filtered):,}")
 
-mail_df = build_mail_export(filtered, householded=(household_mode == "Householded"))
-texting_df = build_texting_export(filtered)
-mail_csv = mail_df.to_csv(index=False).encode("utf-8")
-mail_xlsx = dataframe_to_excel_bytes(mail_df, "Mail File")
-texting_csv = texting_df.to_csv(index=False).encode("utf-8")
+@st.cache_data(show_spinner=False)
+def build_mail_export_bundle(filtered_frame: pd.DataFrame, householded: bool):
+    mail_df = build_mail_export(filtered_frame, householded=householded)
+    return {
+        "rows": len(mail_df),
+        "csv": mail_df.to_csv(index=False).encode("utf-8"),
+        "xlsx": dataframe_to_excel_bytes(mail_df, "Mail File"),
+    }
+
+@st.cache_data(show_spinner=False)
+def build_texting_export_bundle(filtered_frame: pd.DataFrame):
+    texting_df = build_texting_export(filtered_frame)
+    return {
+        "rows": len(texting_df),
+        "csv": texting_df.to_csv(index=False).encode("utf-8"),
+    }
+
+@st.cache_data(show_spinner=False)
+def build_filtered_export_bundle(filtered_frame: pd.DataFrame):
+    export_df = filtered_frame.copy()
+    return {
+        "rows": len(export_df),
+        "csv": export_df.to_csv(index=False).encode("utf-8"),
+    }
+
+mail_cache_key = f"mail_export_bundle_{household_mode}"
 
 with ex2:
-    st.download_button("Download Mail CSV", data=mail_csv, file_name="candidate_connect_mail_file.csv", mime="text/csv", use_container_width=True)
-    st.download_button("Download Mail Excel", data=mail_xlsx, file_name="candidate_connect_mail_file.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+    if st.button("Prepare Mail Files", use_container_width=True, key="prep_mail_exports"):
+        with st.spinner("Preparing mail files..."):
+            st.session_state[mail_cache_key] = build_mail_export_bundle(filtered, householded=(household_mode == "Householded"))
+    if mail_cache_key in st.session_state:
+        st.download_button("Download Mail CSV", data=st.session_state[mail_cache_key]["csv"], file_name="candidate_connect_mail_file.csv", mime="text/csv", use_container_width=True, key="download_mail_csv")
+        st.download_button("Download Mail Excel", data=st.session_state[mail_cache_key]["xlsx"], file_name="candidate_connect_mail_file.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key="download_mail_xlsx")
+        st.caption(f"Mail rows: {st.session_state[mail_cache_key]['rows']:,}")
+    else:
+        st.caption("Click Prepare Mail Files")
+
 with ex3:
-    st.download_button("Download Texting CSV", data=texting_csv, file_name="candidate_connect_texting_file.csv", mime="text/csv", use_container_width=True)
-    st.caption(f"Mail rows: {len(mail_df):,} | Text rows: {len(texting_df):,}")
+    if st.button("Prepare Texting CSV", use_container_width=True, key="prep_texting_export"):
+        with st.spinner("Preparing texting CSV..."):
+            st.session_state["texting_export_bundle"] = build_texting_export_bundle(filtered)
+    if "texting_export_bundle" in st.session_state:
+        st.download_button("Download Texting CSV", data=st.session_state["texting_export_bundle"]["csv"], file_name="candidate_connect_texting_file.csv", mime="text/csv", use_container_width=True, key="download_texting_csv")
+        st.caption(f"Text rows: {st.session_state['texting_export_bundle']['rows']:,}")
+    else:
+        st.caption("Click Prepare Texting CSV")
+
+with ex4:
+    if st.button("Prepare Filtered CSV", use_container_width=True, key="prep_filtered_export"):
+        with st.spinner("Preparing filtered CSV..."):
+            st.session_state["filtered_export_bundle"] = build_filtered_export_bundle(filtered)
+    if "filtered_export_bundle" in st.session_state:
+        st.download_button("Download Filtered CSV", data=st.session_state["filtered_export_bundle"]["csv"], file_name="candidate_connect_filtered_data.csv", mime="text/csv", use_container_width=True, key="download_filtered_csv")
+        st.caption(f"Rows: {st.session_state['filtered_export_bundle']['rows']:,}")
+    else:
+        st.caption("Click Prepare Filtered CSV")
 
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -848,7 +887,7 @@ divider()
 
 st.markdown('<div class="export-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Door-to-Door PDF Report</div>', unsafe_allow_html=True)
-st.markdown('<div class="export-note">Matches the desktop-style report with cover page, precinct counts, precinct bookmarks, and detailed street list pages.</div>', unsafe_allow_html=True)
+st.markdown('<div class="export-note">Matches the desktop-style report with cover page, precinct counts, precinct bookmarks, and detailed street list pages. Files are only built when requested.</div>', unsafe_allow_html=True)
 
 def build_pdf_report_title(filtered_frame: pd.DataFrame) -> str:
     county_label = ""
@@ -873,12 +912,12 @@ def build_pdf_report_title(filtered_frame: pd.DataFrame) -> str:
 
 created_date_text = pd.Timestamp.now().strftime("%m/%d/%Y")
 pdf_report_title = build_pdf_report_title(filtered)
-d2d_preview_df = build_door_to_door_table(filtered)
 
+d2d_stats_df = build_door_to_door_table(filtered)
 pdf_col1, pdf_col2, pdf_col3 = st.columns([1.2, 1, 1])
 
 with pdf_col1:
-    st.caption(f"Precincts: {d2d_preview_df['Precinct'].nunique() if 'Precinct' in d2d_preview_df.columns and len(d2d_preview_df) else 0:,} | Rows: {len(d2d_preview_df):,}")
+    st.caption(f"Precincts: {d2d_stats_df['Precinct'].nunique() if 'Precinct' in d2d_stats_df.columns and len(d2d_stats_df) else 0:,} | Rows: {len(d2d_stats_df):,}")
 
 @st.cache_data(show_spinner=False)
 def build_pdf_bytes_cached(filtered_frame: pd.DataFrame, created_date: str, report_title: str, candidate_logo_path: str, tss_logo_path: str) -> bytes:
@@ -889,6 +928,14 @@ def build_pdf_bytes_cached(filtered_frame: pd.DataFrame, created_date: str, repo
         candidate_logo_path=candidate_logo_path,
         tss_logo_path=tss_logo_path,
     )
+
+@st.cache_data(show_spinner=False)
+def build_d2d_excel_bundle(filtered_frame: pd.DataFrame):
+    d2d_df = build_door_to_door_table(filtered_frame)
+    return {
+        "rows": len(d2d_df),
+        "xlsx": dataframe_to_excel_bytes(d2d_df, "DoorToDoor"),
+    }
 
 with pdf_col2:
     if st.button("Prepare Door-to-Door PDF", use_container_width=True, type="primary"):
@@ -913,14 +960,20 @@ with pdf_col2:
         st.caption("Click Prepare Door-to-Door PDF to build the file.")
 
 with pdf_col3:
-    d2d_excel = dataframe_to_excel_bytes(d2d_preview_df, "DoorToDoor")
-    st.download_button(
-        "Download Door-to-Door Excel",
-        data=d2d_excel,
-        file_name="candidate_connect_door_to_door_report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
+    if st.button("Prepare Door-to-Door Excel", use_container_width=True, key="prep_d2d_excel"):
+        with st.spinner("Preparing door-to-door Excel..."):
+            st.session_state["door_to_door_excel_bundle"] = build_d2d_excel_bundle(filtered)
+    if "door_to_door_excel_bundle" in st.session_state:
+        st.download_button(
+            "Download Door-to-Door Excel",
+            data=st.session_state["door_to_door_excel_bundle"]["xlsx"],
+            file_name="candidate_connect_door_to_door_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="download_d2d_excel",
+        )
+        st.caption(f"Rows: {st.session_state['door_to_door_excel_bundle']['rows']:,}")
+    else:
+        st.caption("Click Prepare Door-to-Door Excel to build the file.")
 
-st.dataframe(d2d_preview_df.head(100), use_container_width=True, hide_index=True)
 st.markdown('</div>', unsafe_allow_html=True)
