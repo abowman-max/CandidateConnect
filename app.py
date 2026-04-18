@@ -25,7 +25,7 @@ st.markdown("""
 }
 .top-shell {padding: .85rem 1rem; margin-bottom: .8rem;}
 .section-card, .chart-card, .table-card, .export-card {padding: .8rem .9rem; margin-bottom: .8rem;}
-.metric-card {padding: .55rem .7rem; height: 100%;}
+.metric-card {padding: .55rem .7rem; height: 106px; display:flex; flex-direction:column; justify-content:center;}
 .metric-label {font-size: 11px; color: #666; margin-bottom: .12rem;}
 .metric-value {font-size: 1.55rem; font-weight: 700; color: #24303f; line-height: 1.1;}
 .small-header {font-size: 13px; font-weight: 700; color: #2f3134; margin-bottom: .35rem;}
@@ -40,10 +40,13 @@ st.markdown("""
 div[data-testid="stDataFrame"] [role="row"] {min-height: 28px !important;}
 section[data-testid="stSidebar"] .block-container {padding-top: 1rem;}
 section[data-testid="stSidebar"] {border-right: 1px solid #e7e0e0;}
-.cc-mini-table {width:100%; border-collapse:collapse; font-size:11px; margin-top:.3rem;}
+.cc-mini-table {width:100%; border-collapse:collapse; font-size:11px; margin-top:.35rem;}
 .cc-mini-table th {text-align:center; padding:4px 6px; color:#666; font-weight:700; border-bottom:1px solid #ece7e7;}
-.cc-mini-table td {text-align:center; padding:4px 6px; border-bottom:1px solid #f0ebeb;}
-.cc-swatch {display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; margin-right:6px; border:1px solid rgba(0,0,0,.08);}
+.cc-mini-table td {padding:4px 6px; border-bottom:1px solid #f0ebeb;}
+.cc-mini-table td.label-cell {text-align:left;}
+.cc-mini-table td.num-cell {text-align:center;}
+.cc-mini-table tr.total-row td {font-weight:700; border-top:1px solid #dcd6d6;}
+.cc-swatch {display:inline-block; width:9px; height:9px; border-radius:2px; vertical-align:middle; margin-right:8px; position:relative; top:-1px; border:1px solid rgba(0,0,0,.08);}
 </style>
 """, unsafe_allow_html=True)
 
@@ -67,6 +70,13 @@ def clean_text(val):
 def value_present(series: pd.Series) -> pd.Series:
     text = series.astype(str).str.strip()
     return series.notna() & ~text.isin(["", "nan", "None"])
+
+
+def fmt_pct(v: float) -> str:
+    rounded = round(v, 1)
+    if float(rounded).is_integer():
+        return f"{int(rounded)}%"
+    return f"{rounded:.1f}%"
 
 
 @st.cache_resource(show_spinner=True)
@@ -338,9 +348,12 @@ def make_summary_table(df_chart: pd.DataFrame, label_col: str, value_col: str, c
         pct = 0 if total == 0 else (val / total) * 100
         color = colors[i] if i < len(colors) else "#999999"
         rows.append(
-            f"<tr><td><span class='cc-swatch' style='background:{color};'></span></td>"
-            f"<td>{row[label_col]}</td><td>{val:,.0f}</td><td>{pct:.1f}%</td></tr>"
+            f"<tr><td class='num-cell'><span class='cc-swatch' style='background:{color};'></span></td>"
+            f"<td class='label-cell'>{row[label_col]}</td><td class='num-cell'>{val:,.0f}</td><td class='num-cell'>{fmt_pct(pct)}</td></tr>"
         )
+    rows.append(
+        f"<tr class='total-row'><td></td><td class='label-cell'>Total</td><td class='num-cell'>{total:,.0f}</td><td class='num-cell'>100%</td></tr>"
+    )
     return f"<table class='cc-mini-table'><thead>{headers}</thead><tbody>{''.join(rows)}</tbody></table>"
 
 
@@ -351,6 +364,11 @@ def pie_chart_with_table(df_chart: pd.DataFrame, label_col: str, value_col: str,
         return
 
     chart_df = df_chart.copy()
+    chart_df[value_col] = pd.to_numeric(chart_df[value_col], errors="coerce").fillna(0)
+    chart_df = chart_df.sort_values(value_col, ascending=False).reset_index(drop=True)
+    total = chart_df[value_col].sum()
+    chart_df["Percent"] = 0 if total == 0 else (chart_df[value_col] / total) * 100
+
     domain = chart_df[label_col].astype(str).tolist()
     if color_mode == "party":
         colors = [PARTY_COLOR_MAP.get(v, "#757575") for v in domain]
@@ -362,7 +380,11 @@ def pie_chart_with_table(df_chart: pd.DataFrame, label_col: str, value_col: str,
     chart = alt.Chart(chart_df).mark_arc(innerRadius=18, outerRadius=60).encode(
         theta=alt.Theta(field=value_col, type="quantitative"),
         color=alt.Color(field=label_col, type="nominal", scale=alt.Scale(domain=domain, range=colors), legend=None),
-        tooltip=[alt.Tooltip(f"{label_col}:N"), alt.Tooltip(f"{value_col}:Q", format=",")]
+        tooltip=[
+            alt.Tooltip(f"{label_col}:N"),
+            alt.Tooltip(f"{value_col}:Q", format=","),
+            alt.Tooltip("Percent:Q", format=".1f"),
+        ]
     ).properties(height=220)
 
     st.altair_chart(chart, use_container_width=True)
@@ -453,9 +475,16 @@ area_choices = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", 
 if area_choices:
     selected_area = st.selectbox("Area", area_choices, label_visibility="collapsed")
     area_df = build_area_summary(filtered, selected_area).copy()
-    for col in ["Individuals", "Households"]:
-        area_df[col] = pd.to_numeric(area_df[col], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
-    st.dataframe(area_df, use_container_width=True, hide_index=True)
+    st.dataframe(
+        area_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            selected_area: st.column_config.TextColumn(selected_area, width="medium"),
+            "Individuals": st.column_config.NumberColumn("Individuals", format="%d"),
+            "Households": st.column_config.NumberColumn("Households", format="%d"),
+        },
+    )
 else:
     st.caption("No area columns found")
 st.markdown('</div>', unsafe_allow_html=True)
