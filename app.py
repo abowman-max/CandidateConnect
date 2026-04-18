@@ -3,15 +3,20 @@ import pandas as pd
 import gdown
 from pathlib import Path
 from io import BytesIO
+import altair as alt
 
 st.set_page_config(page_title="Candidate Connect", layout="wide")
 
 DRIVE_FILE_ID = "1vQTn2pc1vuZiI8a0CyPvPA1k3jMOSNPt"
 LOCAL_PARQUET = Path("/tmp/candidate_connect_data.parquet")
 
+PARTY_COLOR_MAP = {"R": "#c62828", "D": "#1565c0", "O": "#2e7d32"}
+AGE_COLOR_RANGE = ["#7a1523","#9f2032","#b8454f","#c96a6c","#d88f87","#e8b8aa","#f2dbcf","#f7ebe5","#fbf5f2"]
+GENDER_COLOR_RANGE = ["#7a1523","#4b4f54","#b98088","#9b9da1","#d8b6bb"]
+
 st.markdown("""
 <style>
-.block-container {padding-top: 1rem; padding-bottom: .75rem; max-width: 1600px;}
+.block-container {padding-top: .8rem; padding-bottom: .75rem; max-width: 1600px;}
 .top-shell, .section-card, .chart-card, .table-card, .export-card, .metric-card {
     border: 1px solid #ded7d7;
     border-radius: 14px;
@@ -20,32 +25,21 @@ st.markdown("""
 }
 .top-shell {padding: .85rem 1rem; margin-bottom: .8rem;}
 .section-card, .chart-card, .table-card, .export-card {padding: .8rem .9rem; margin-bottom: .8rem;}
-.metric-card {padding: .6rem .75rem; height: 100%;}
-.metric-label {font-size: 11px; color: #666; margin-bottom: .15rem;}
-.metric-value {font-size: 1.75rem; font-weight: 700; color: #24303f; line-height: 1.1;}
-.small-header {font-size: 13px; font-weight: 700; color: #2f3134; margin-bottom: .4rem;}
+.metric-card {padding: .55rem .7rem; height: 100%;}
+.metric-label {font-size: 11px; color: #666; margin-bottom: .12rem;}
+.metric-value {font-size: 1.55rem; font-weight: 700; color: #24303f; line-height: 1.1;}
+.small-header {font-size: 13px; font-weight: 700; color: #2f3134; margin-bottom: .35rem;}
 .tiny-muted {font-size: 10px; color: #666;}
-.good-banner {
-    border:1px solid #cfe7d4; background:#edf8ef; color:#216c2e; border-radius:10px;
-    padding:.65rem .85rem; font-size:12px; font-weight:600; margin-bottom:.75rem;
-}
-.info-banner {
-    border:1px solid #cad8ea; background:#eef5fc; color:#245280; border-radius:10px;
-    padding:.65rem .85rem; font-size:12px; font-weight:600; margin-bottom:.75rem;
-}
 .export-note {font-size:10px; color:#666; margin-top:.1rem;}
 .stDownloadButton > button, .stButton > button {
     width:100%;
     border-radius:9px;
-    min-height: 2.25rem;
+    min-height: 2.1rem;
     font-weight: 600;
 }
-div[data-testid="stMetric"] {border:none; background:transparent; padding:0;}
 div[data-testid="stDataFrame"] [role="row"] {min-height: 28px !important;}
 section[data-testid="stSidebar"] .block-container {padding-top: 1rem;}
-section[data-testid="stSidebar"] {
-    border-right: 1px solid #e7e0e0;
-}
+section[data-testid="stSidebar"] {border-right: 1px solid #e7e0e0;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -64,6 +58,11 @@ def clean_text(val):
         return ""
     text = str(val).strip()
     return "" if text.lower() in {"nan", "none"} else text
+
+
+def value_present(series: pd.Series) -> pd.Series:
+    text = series.astype(str).str.strip()
+    return series.notna() & ~text.isin(["", "nan", "None"])
 
 
 @st.cache_resource(show_spinner=True)
@@ -105,6 +104,12 @@ def load_data():
         df["_AgeRange"] = df[age_range_col].astype(str).str.strip().replace({"nan": "", "None": ""})
     else:
         df["_AgeRange"] = ""
+
+    for col in ["Email", "Landline", "Mobile"]:
+        if col in df.columns:
+            df[f"_Has{col}"] = value_present(df[col])
+        else:
+            df[f"_Has{col}"] = False
 
     return df.reset_index(drop=True)
 
@@ -320,19 +325,54 @@ def dataframe_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Export") -> by
     return output.getvalue()
 
 
-# Data load
-st.markdown('<div class="top-shell"><div class="small-header">Candidate Connect</div><div class="tiny-muted">Web dashboard for filters, charts, and exports</div></div>', unsafe_allow_html=True)
+def pie_chart_with_table(df_chart: pd.DataFrame, label_col: str, value_col: str, title: str, color_mode: str):
+    st.markdown(f'<div class="small-header">{title}</div>', unsafe_allow_html=True)
+    if df_chart.empty:
+        st.caption("No data")
+        return
 
-st.markdown('<div class="info-banner">Loading data from Google Drive...</div>', unsafe_allow_html=True)
+    chart_df = df_chart.copy()
+    domain = chart_df[label_col].astype(str).tolist()
+    if color_mode == "party":
+        colors = [PARTY_COLOR_MAP.get(v, "#757575") for v in domain]
+    elif color_mode == "age":
+        colors = AGE_COLOR_RANGE[:len(domain)]
+    else:
+        colors = GENDER_COLOR_RANGE[:len(domain)]
+
+    chart = alt.Chart(chart_df).mark_arc(innerRadius=18, outerRadius=60).encode(
+        theta=alt.Theta(field=value_col, type="quantitative"),
+        color=alt.Color(field=label_col, type="nominal", scale=alt.Scale(domain=domain, range=colors), legend=None),
+        tooltip=[alt.Tooltip(f"{label_col}:N"), alt.Tooltip(f"{value_col}:Q", format=",")]
+    ).properties(height=220)
+
+    st.altair_chart(chart, use_container_width=True)
+
+    display_df = chart_df[[label_col, value_col]].copy()
+    display_df[value_col] = pd.to_numeric(display_df[value_col], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
+    st.dataframe(display_df, use_container_width=True, hide_index=True, height=180)
+
+
+# Load data with temporary messages that disappear
+loading_box = st.empty()
+loading_box.markdown('<div class="top-shell"><div class="small-header">Candidate Connect</div><div class="tiny-muted">Web dashboard for filters, charts, and exports</div></div>', unsafe_allow_html=True)
+
+status_box = st.empty()
+status_box.markdown('<div class="section-card"><div class="small-header">Loading data from Google Drive...</div></div>', unsafe_allow_html=True)
+
 try:
     df = load_data()
 except Exception as e:
+    status_box.empty()
     st.error(f"Error loading data: {e}")
     st.stop()
 
-st.markdown('<div class="good-banner">Data loaded successfully</div>', unsafe_allow_html=True)
+loading_box.empty()
+status_box.empty()
 
-# Sidebar filters
+# Permanent header
+st.markdown('<div class="top-shell"><div class="small-header">Candidate Connect</div><div class="tiny-muted">Web dashboard for filters, charts, and exports</div></div>', unsafe_allow_html=True)
+
 with st.sidebar:
     st.header("Filters")
     filter_cols = [c for c in ["Party", "County", "Municipality", "Precinct"] if c in df.columns]
@@ -358,7 +398,65 @@ if age_range is not None:
 
 filtered = filtered.reset_index(drop=True)
 
-# Exports
+# Metrics
+metric_cols = st.columns(7, gap="small")
+metric_values = [
+    ("Voters", f"{len(filtered):,}"),
+    ("Households", f"{count_households(filtered):,}"),
+    ("Emails", f"{int(filtered['_HasEmail'].sum()):,}"),
+    ("Landlines", f"{int(filtered['_HasLandline'].sum()):,}"),
+    ("Mobiles", f"{int(filtered['_HasMobile'].sum()):,}"),
+    ("Unique Counties", f"{filtered['County'].nunique() if 'County' in filtered.columns else 0:,}"),
+    ("Unique Precincts", f"{filtered['Precinct'].nunique() if 'Precinct' in filtered.columns else 0:,}"),
+]
+for col, (label, value) in zip(metric_cols, metric_values):
+    with col:
+        st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
+
+# Charts
+chart_cols = st.columns(3, gap="medium")
+
+party_df = filtered["Party"].value_counts().rename_axis("Party").reset_index(name="Count") if "Party" in filtered.columns else pd.DataFrame(columns=["Party", "Count"])
+gender_df = filtered["_Gender"].value_counts().rename_axis("Gender").reset_index(name="Count")
+age_series = filtered["_AgeRange"].replace("", pd.NA).dropna()
+age_df = age_series.value_counts().rename_axis("Age Range").reset_index(name="Count") if len(age_series) > 0 else pd.DataFrame(columns=["Age Range", "Count"])
+
+with chart_cols[0]:
+    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+    pie_chart_with_table(party_df, "Party", "Count", "Party Breakdown", "party")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with chart_cols[1]:
+    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+    pie_chart_with_table(gender_df, "Gender", "Count", "Gender Breakdown", "gender")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with chart_cols[2]:
+    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+    pie_chart_with_table(age_df, "Age Range", "Count", "Age Range Breakdown", "age")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Counts by area
+st.markdown('<div class="table-card">', unsafe_allow_html=True)
+st.markdown('<div class="small-header">Counts by Area</div>', unsafe_allow_html=True)
+area_choices = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in filtered.columns]
+if area_choices:
+    selected_area = st.selectbox("Area", area_choices, label_visibility="collapsed")
+    area_df = build_area_summary(filtered, selected_area).copy()
+    for col in ["Individuals", "Households"]:
+        area_df[col] = pd.to_numeric(area_df[col], errors="coerce").fillna(0).astype(int)
+    st.dataframe(area_df, use_container_width=True, hide_index=True)
+else:
+    st.caption("No area columns found")
+st.markdown('</div>', unsafe_allow_html=True)
+
+# Preview
+st.markdown('<div class="table-card">', unsafe_allow_html=True)
+st.markdown('<div class="small-header">Preview</div>', unsafe_allow_html=True)
+st.dataframe(filtered.head(100), use_container_width=True, hide_index=True)
+st.markdown('</div>', unsafe_allow_html=True)
+
+# Exports at bottom
 st.markdown('<div class="export-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
 st.markdown('<div class="export-note">Web version downloads files directly through your browser.</div>', unsafe_allow_html=True)
@@ -401,63 +499,4 @@ with ex3:
     )
     st.caption(f"Mail rows: {len(mail_df):,} | Text rows: {len(texting_df):,}")
 
-st.markdown('</div>', unsafe_allow_html=True)
-
-# Metrics
-metric_cols = st.columns(4, gap="small")
-metric_values = [
-    ("Voters", f"{len(filtered):,}"),
-    ("Households", f"{count_households(filtered):,}"),
-    ("Unique Counties", f"{filtered['County'].nunique() if 'County' in filtered.columns else 0:,}"),
-    ("Unique Precincts", f"{filtered['Precinct'].nunique() if 'Precinct' in filtered.columns else 0:,}"),
-]
-for col, (label, value) in zip(metric_cols, metric_values):
-    with col:
-        st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
-
-# Charts
-chart_cols = st.columns(3, gap="medium")
-with chart_cols[0]:
-    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-    st.markdown('<div class="small-header">Party Breakdown</div>', unsafe_allow_html=True)
-    if "Party" in filtered.columns:
-        st.bar_chart(filtered["Party"].value_counts())
-    else:
-        st.caption("No Party column")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with chart_cols[1]:
-    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-    st.markdown('<div class="small-header">Gender Breakdown</div>', unsafe_allow_html=True)
-    st.bar_chart(filtered["_Gender"].value_counts())
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with chart_cols[2]:
-    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-    st.markdown('<div class="small-header">Age Range Breakdown</div>', unsafe_allow_html=True)
-    age_series = filtered["_AgeRange"].replace("", pd.NA).dropna()
-    if len(age_series) > 0:
-        st.bar_chart(age_series.value_counts())
-    else:
-        st.caption("No Age Range column")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# Counts by area
-st.markdown('<div class="table-card">', unsafe_allow_html=True)
-st.markdown('<div class="small-header">Counts by Area</div>', unsafe_allow_html=True)
-area_choices = [c for c in ["County", "Municipality", "Precinct"] if c in filtered.columns]
-if area_choices:
-    selected_area = st.selectbox("Area", area_choices, label_visibility="collapsed")
-    area_df = build_area_summary(filtered, selected_area).copy()
-    for col in ["Individuals", "Households"]:
-        area_df[col] = pd.to_numeric(area_df[col], errors="coerce").fillna(0).astype(int)
-    st.dataframe(area_df, use_container_width=True, hide_index=True)
-else:
-    st.caption("No area columns found")
-st.markdown('</div>', unsafe_allow_html=True)
-
-# Preview
-st.markdown('<div class="table-card">', unsafe_allow_html=True)
-st.markdown('<div class="small-header">Preview</div>', unsafe_allow_html=True)
-st.dataframe(filtered.head(100), use_container_width=True, hide_index=True)
 st.markdown('</div>', unsafe_allow_html=True)
