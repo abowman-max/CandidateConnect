@@ -649,16 +649,19 @@ if age_range_pick:
 if age_slider is not None:
     filtered = filtered[(filtered["_AgeNum"] >= age_slider[0]) & (filtered["_AgeNum"] <= age_slider[1])]
 
+st.caption(f"Valid Registration Dates: {pd.to_datetime(filtered['_RegistrationDate'], errors='coerce').notna().sum():,}")
+
 if new_reg_pick != "(Any)":
     today = pd.Timestamp.today().normalize()
     reg_dates = pd.to_datetime(filtered["_RegistrationDate"], errors="coerce")
+    valid_mask = reg_dates.notna()
     if new_reg_pick == "Less than 3 months":
         cutoff = today - pd.DateOffset(months=3)
     elif new_reg_pick == "Less than 6 months":
         cutoff = today - pd.DateOffset(months=6)
     else:
         cutoff = today - pd.DateOffset(years=1)
-    filtered = filtered[reg_dates.notna() & (reg_dates >= cutoff)]
+    filtered = filtered[valid_mask & (reg_dates >= cutoff)]
 if vote_history_pick:
     filtered = filtered[filtered["_VoteHistory"].astype(str).isin(vote_history_pick)]
 
