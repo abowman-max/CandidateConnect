@@ -31,7 +31,7 @@ st.markdown("""
 .metric-card {padding: .6rem .7rem; height: 94px; display:flex; flex-direction:column; justify-content:center;}
 .metric-label {font-size: 11px; color: #666; margin-bottom: .12rem;}
 .metric-value {font-size: 1.55rem; font-weight: 700; color: #24303f; line-height: 1.1;}
-.small-header {font-size: 15px; font-weight: 800; color: #162235; margin-bottom: .45rem;}
+.small-header {font-size: 16px; font-weight: 900; color: #142033; margin-bottom: .45rem;}
 .tiny-muted {font-size: 10px; color: #596579;}
 .export-note {font-size:10px; color:#666; margin-top:.1rem;}
 .stDownloadButton > button, .stButton > button {
@@ -531,8 +531,11 @@ with st.sidebar:
             vh_method = st.selectbox("Vote Method", method_options, index=method_options.index(st.session_state.active_filters.get("vh_method", "(Any)")) if st.session_state.active_filters.get("vh_method", "(Any)") in method_options else 0)
 
             use_new_reg_filter = st.checkbox("Filter by Recently Registered", value=st.session_state.active_filters.get("use_new_reg_filter", False))
-            new_reg_months = st.slider("Registered in the last X months", 1, 24, st.session_state.active_filters.get("new_reg_months", 12))
-            st.caption("Based on most recent registration date in the file")
+            if use_new_reg_filter:
+                new_reg_months = st.slider("Registered in the last X months", 1, 24, st.session_state.active_filters.get("new_reg_months", 12))
+                st.caption("Based on most recent registration date in the file")
+            else:
+                new_reg_months = 12
             vote_history_pick = st.multiselect("Vote History", vote_history_vals, default=st.session_state.active_filters.get("vote_history_pick", [])) if vote_history_vals else []
 
         with st.expander("Mail In Ballots", expanded=False):
@@ -577,8 +580,9 @@ with st.sidebar:
             has_landline = st.selectbox("Landline", landline_opts, index=landline_opts.index(st.session_state.active_filters.get("has_landline", "All")) if st.session_state.active_filters.get("has_landline", "All") in landline_opts else 0)
             has_mobile = st.selectbox("Mobile", mobile_opts, index=mobile_opts.index(st.session_state.active_filters.get("has_mobile", "All")) if st.session_state.active_filters.get("has_mobile", "All") in mobile_opts else 0)
 
+        st.caption("Changes apply when you click 'Apply Filters'")
         cols = st.columns(2)
-        apply_filters = cols[0].form_submit_button("Apply Filters", use_container_width=True)
+        apply_filters = cols[0].form_submit_button("Apply Filters", use_container_width=True, type="primary")
         clear_filters = cols[1].form_submit_button("Clear Filters", use_container_width=True)
 
     if clear_filters:
