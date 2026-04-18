@@ -1,7 +1,7 @@
 streamlit
 pandas
-pyarrow
-altair
-reportlab
 gdown
+altair
 openpyxl
+reportlab
+pyarrow

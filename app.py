@@ -5,6 +5,7 @@ from pathlib import Path
 from io import BytesIO
 import altair as alt
 import base64
+from candidate_connect_pdf_report import generate_door_to_door_pdf, build_door_to_door_table
 
 st.set_page_config(page_title="Candidate Connect", layout="wide")
 
@@ -355,80 +356,6 @@ def build_mail_export(frame: pd.DataFrame, householded: bool) -> pd.DataFrame:
         })
     return pd.DataFrame(rows)
 
-
-
-
-def build_door_to_door_report(frame: pd.DataFrame) -> pd.DataFrame:
-    df = frame.copy()
-
-    df["_FullName"] = df.apply(full_name_from_row, axis=1)
-    df["_AddressLine1"] = build_address_line1(df)
-
-    if "House Number" in df.columns:
-        df["_HouseNumSort"] = pd.to_numeric(df["House Number"], errors="coerce")
-        df["_HouseNumberDisplay"] = df["House Number"].astype(str).fillna("").replace({"nan":"","None":""}).str.strip()
-    else:
-        df["_HouseNumSort"] = pd.NA
-        df["_HouseNumberDisplay"] = ""
-
-    if "Street Name" in df.columns:
-        df["_Street"] = df["Street Name"].astype(str).fillna("").str.strip()
-    else:
-        df["_Street"] = ""
-
-    city, state, zipcode = resolve_city_state_zip(df)
-    df["_City"] = city
-    df["_State"] = state
-    df["_Zip"] = zipcode
-
-    address_full = df["_AddressLine1"].fillna("")
-    city_state_zip = (
-        df["_City"].fillna("").astype(str).str.strip()
-        + ", "
-        + df["_State"].fillna("").astype(str).str.strip()
-        + " "
-        + df["_Zip"].fillna("").astype(str).str.strip()
-    ).str.replace(r"^,\s*", "", regex=True).str.replace(r"\s+", " ", regex=True).str.strip()
-    address_full = (address_full + ", " + city_state_zip).str.replace(r",\s*$", "", regex=True).str.replace(r"\s+", " ", regex=True).str.strip()
-
-    useful_fields = {}
-    for out_col, source_col in [
-        ("Gender", "_Gender"),
-        ("Age Range", "_AgeRange"),
-        ("County", "County"),
-        ("Municipality", "Municipality"),
-        ("Precinct", "Precinct"),
-        ("School District", "School District"),
-        ("USC", "USC"),
-        ("STS", "STS"),
-        ("STH", "STH"),
-        ("Household Party", "HH-Party"),
-        ("Calculated Party", "CalculatedParty"),
-        ("Has Mobile", "_HasMobile"),
-        ("Has Email", "_HasEmail"),
-    ]:
-        if source_col in df.columns:
-            useful_fields[out_col] = df[source_col]
-
-    out = pd.DataFrame({
-        "Street Name": df["_Street"],
-        "House Number": df["_HouseNumberDisplay"],
-        "Name": df["_FullName"],
-        "Address": address_full,
-        "Party": df["Party"] if "Party" in df.columns else "",
-        "Age": df["_AgeNum"],
-        **useful_fields,
-    })
-
-    if "Has Mobile" in out.columns:
-        out["Has Mobile"] = out["Has Mobile"].map(lambda x: "Yes" if bool(x) else "")
-    if "Has Email" in out.columns:
-        out["Has Email"] = out["Has Email"].map(lambda x: "Yes" if bool(x) else "")
-
-    out["_HouseNumSort"] = df["_HouseNumSort"]
-    out = out.sort_values(by=["Street Name", "_HouseNumSort", "Name"], ascending=[True, True, True], na_position="last")
-    out = out.drop(columns=["_HouseNumSort"])
-    return out.reset_index(drop=True)
 
 def build_texting_export(frame: pd.DataFrame) -> pd.DataFrame:
     out = frame.copy()
@@ -911,24 +838,68 @@ with ex3:
 
 st.markdown('</div>', unsafe_allow_html=True)
 
+
 divider()
 
 st.markdown('<div class="export-card">', unsafe_allow_html=True)
-st.markdown('<div class="small-header">Door-to-Door Street List</div>', unsafe_allow_html=True)
-st.markdown('<div class="export-note">Uses your current filters and sorts the list in walking order by street and house number.</div>', unsafe_allow_html=True)
+st.markdown('<div class="small-header">Door-to-Door PDF Report</div>', unsafe_allow_html=True)
+st.markdown('<div class="export-note">Matches the desktop-style report with cover page, precinct counts, precinct bookmarks, and detailed street list pages.</div>', unsafe_allow_html=True)
 
-d2d_df = build_door_to_door_report(filtered)
-st.dataframe(d2d_df.head(100), use_container_width=True, hide_index=True)
+def build_pdf_report_title(filtered_frame: pd.DataFrame) -> str:
+    county_label = ""
+    if "County" in filtered_frame.columns and len(filtered_frame):
+        county_vals = [smart_title(v) for v in filtered_frame["County"].dropna().astype(str).tolist() if clean_text(v)]
+        if county_vals:
+            unique_counties = sorted(set(county_vals))
+            county_label = unique_counties[0] if len(unique_counties) == 1 else "Selected Counties"
 
-d2d_csv = d2d_df.to_csv(index=False).encode('utf-8')
-d2d_excel = dataframe_to_excel_bytes(d2d_df, 'DoorToDoor')
+    party_label = ""
+    if "Party" in filtered_frame.columns and len(filtered_frame):
+        unique_parties = sorted(set([clean_text(v).upper() for v in filtered_frame["Party"].dropna().astype(str).tolist() if clean_text(v)]))
+        party_map = {"R": "GOP voters", "D": "Dem voters", "O": "Other voters"}
+        if len(unique_parties) == 1:
+            party_label = party_map.get(unique_parties[0], f"{unique_parties[0]} voters")
 
-d2d_col1, d2d_col2 = st.columns(2)
-with d2d_col1:
-    st.download_button('Download Door-to-Door CSV', data=d2d_csv, file_name='candidate_connect_door_to_door.csv', mime='text/csv', use_container_width=True)
-with d2d_col2:
-    st.download_button('Download Door-to-Door Excel', data=d2d_excel, file_name='candidate_connect_door_to_door.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', use_container_width=True)
+    if county_label and party_label:
+        return f"{party_label} in {county_label}"
+    if county_label:
+        return f"Door-to-door voters in {county_label}"
+    return "Door-to-Door Street List"
 
-st.caption(f'Door-to-door rows: {len(d2d_df):,}')
+created_date_text = pd.Timestamp.now().strftime("%m/%d/%Y")
+pdf_report_title = build_pdf_report_title(filtered)
+d2d_preview_df = build_door_to_door_table(filtered)
+
+pdf_col1, pdf_col2, pdf_col3 = st.columns([1.2, 1, 1])
+
+with pdf_col1:
+    st.caption(f"Precincts: {d2d_preview_df['Precinct'].nunique() if 'Precinct' in d2d_preview_df.columns and len(d2d_preview_df) else 0:,} | Rows: {len(d2d_preview_df):,}")
+
+with pdf_col2:
+    pdf_bytes = generate_door_to_door_pdf(
+        filtered=filtered,
+        created_date=created_date_text,
+        report_title=pdf_report_title,
+        candidate_logo_path=str(CC_LOGO),
+        tss_logo_path=str(TSS_LOGO),
+    )
+    st.download_button(
+        "Download Door-to-Door PDF",
+        data=pdf_bytes,
+        file_name="candidate_connect_door_to_door_report.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
+
+with pdf_col3:
+    d2d_excel = dataframe_to_excel_bytes(d2d_preview_df, "DoorToDoor")
+    st.download_button(
+        "Download Door-to-Door Excel",
+        data=d2d_excel,
+        file_name="candidate_connect_door_to_door_report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
+st.dataframe(d2d_preview_df.head(100), use_container_width=True, hide_index=True)
 st.markdown('</div>', unsafe_allow_html=True)
-
