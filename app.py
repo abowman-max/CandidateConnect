@@ -4,11 +4,14 @@ import gdown
 from pathlib import Path
 from io import BytesIO
 import altair as alt
+import base64
 
 st.set_page_config(page_title="Candidate Connect", layout="wide")
 
 DRIVE_FILE_ID = "1vQTn2pc1vuZiI8a0CyPvPA1k3jMOSNPt"
 LOCAL_PARQUET = Path("/tmp/candidate_connect_data.parquet")
+CC_LOGO = Path("candidate_connect_logo.png")
+TSS_LOGO = Path("TSS_Logo_Transparent.png")
 
 PARTY_COLOR_MAP = {"R": "#c62828", "D": "#1565c0", "O": "#2e7d32"}
 AGE_COLOR_RANGE = ["#7a1523","#9f2032","#b8454f","#c96a6c","#d88f87","#e8b8aa","#f2dbcf","#f7ebe5","#fbf5f2"]
@@ -16,7 +19,7 @@ GENDER_COLOR_RANGE = ["#7a1523","#4b4f54","#b98088","#9b9da1","#d8b6bb"]
 
 st.markdown("""
 <style>
-.block-container {padding-top: .8rem; padding-bottom: .75rem; max-width: 1600px;}
+.block-container {padding-top: .7rem; padding-bottom: .75rem; max-width: 1600px;}
 .top-shell, .section-card, .chart-card, .table-card, .export-card, .metric-card {
     border: 1px solid #ded7d7;
     border-radius: 14px;
@@ -28,7 +31,7 @@ st.markdown("""
 .metric-card {padding: .55rem .7rem; height: 106px; display:flex; flex-direction:column; justify-content:center;}
 .metric-label {font-size: 11px; color: #666; margin-bottom: .12rem;}
 .metric-value {font-size: 1.55rem; font-weight: 700; color: #24303f; line-height: 1.1;}
-.small-header {font-size: 13px; font-weight: 700; color: #2f3134; margin-bottom: .35rem;}
+.small-header {font-size: 13px; font-weight: 700; color: #1f2530; margin-bottom: .35rem;}
 .tiny-muted {font-size: 10px; color: #666;}
 .export-note {font-size:10px; color:#666; margin-top:.1rem;}
 .stDownloadButton > button, .stButton > button {
@@ -41,14 +44,37 @@ div[data-testid="stDataFrame"] [role="row"] {min-height: 28px !important;}
 section[data-testid="stSidebar"] .block-container {padding-top: 1rem;}
 section[data-testid="stSidebar"] {border-right: 1px solid #e7e0e0;}
 .cc-mini-table {width:100%; border-collapse:collapse; font-size:11px; margin-top:.35rem;}
-.cc-mini-table th {text-align:center; padding:4px 6px; color:#666; font-weight:700; border-bottom:1px solid #ece7e7;}
+.cc-mini-table th {text-align:center; padding:4px 6px; color:#4c5668; font-weight:700; border-bottom:1px solid #ece7e7;}
 .cc-mini-table td {padding:4px 6px; border-bottom:1px solid #f0ebeb;}
 .cc-mini-table td.label-cell {text-align:left;}
 .cc-mini-table td.num-cell {text-align:center;}
 .cc-mini-table tr.total-row td {font-weight:700; border-top:1px solid #dcd6d6;}
 .cc-swatch {display:inline-block; width:9px; height:9px; border-radius:2px; vertical-align:middle; margin-right:8px; position:relative; top:-1px; border:1px solid rgba(0,0,0,.08);}
+.brand-grid {display:grid; grid-template-columns: 180px 1fr 180px; gap:16px; align-items:center;}
+.brand-left {display:flex; align-items:center; justify-content:flex-start;}
+.brand-center {display:flex; flex-direction:column; justify-content:center;}
+.brand-right {display:flex; flex-direction:column; align-items:center; justify-content:center;}
+.brand-title {font-size: 24px; font-weight: 800; color:#153d73; line-height:1.05; margin-bottom:.12rem;}
+.brand-sub {font-size: 11px; color:#5d6778; font-weight:600;}
+.brand-status {font-size: 10px; color:#6a7280; margin-top:.22rem;}
+.powered-by {font-size:10px; color:#777; margin-bottom:.1rem; text-align:center;}
+.logo-cc {max-width:100%; height:auto; display:block;}
+.logo-tss {max-width:110px; height:auto; display:block;}
+.loading-banner {font-size:12px; font-weight:600; color:#245280;}
+@media (max-width: 1100px) {
+  .brand-grid {grid-template-columns: 1fr; gap:10px;}
+  .brand-left, .brand-right {justify-content:center;}
+  .brand-center {text-align:center;}
+}
 </style>
 """, unsafe_allow_html=True)
+
+
+def img_to_data_uri(path: Path) -> str:
+    if not path.exists():
+        return ""
+    encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
+    return f"data:image/png;base64,{encoded}"
 
 
 def smart_title(val):
@@ -391,10 +417,23 @@ def pie_chart_with_table(df_chart: pd.DataFrame, label_col: str, value_col: str,
     st.markdown(make_summary_table(chart_df, label_col, value_col, colors), unsafe_allow_html=True)
 
 
+def file_modified_text(path: Path) -> str:
+    if not path.exists():
+        return "Google Drive source"
+    try:
+        ts = pd.Timestamp(path.stat().st_mtime, unit="s")
+        return ts.strftime("%m/%d/%Y %I:%M %p")
+    except Exception:
+        return "Google Drive source"
+
+
+cc_logo_uri = img_to_data_uri(CC_LOGO)
+tss_logo_uri = img_to_data_uri(TSS_LOGO)
+
 loading_box = st.empty()
 loading_box.markdown('<div class="top-shell"><div class="small-header">Candidate Connect</div><div class="tiny-muted">Web dashboard for filters, charts, and exports</div></div>', unsafe_allow_html=True)
 status_box = st.empty()
-status_box.markdown('<div class="section-card"><div class="small-header">Loading data from Google Drive...</div></div>', unsafe_allow_html=True)
+status_box.markdown('<div class="section-card"><div class="small-header loading-banner">Loading data from Google Drive...</div></div>', unsafe_allow_html=True)
 
 try:
     df = load_data()
@@ -406,7 +445,25 @@ except Exception as e:
 loading_box.empty()
 status_box.empty()
 
-st.markdown('<div class="top-shell"><div class="small-header">Candidate Connect</div><div class="tiny-muted">Web dashboard for filters, charts, and exports</div></div>', unsafe_allow_html=True)
+header_html = f"""
+<div class="top-shell">
+  <div class="brand-grid">
+    <div class="brand-left">
+      {f'<img class="logo-cc" src="{cc_logo_uri}"/>' if cc_logo_uri else ''}
+    </div>
+    <div class="brand-center">
+      <div class="brand-title">Candidate Connect</div>
+      <div class="brand-sub">Voter Data &amp; Engagement Platform</div>
+      <div class="brand-status">Data Source: Google Drive &nbsp;&nbsp;|&nbsp;&nbsp; Last Loaded File: {file_modified_text(LOCAL_PARQUET)} &nbsp;&nbsp;|&nbsp;&nbsp; Rows Available: {len(df):,}</div>
+    </div>
+    <div class="brand-right">
+      <div class="powered-by">Powered By</div>
+      {f'<img class="logo-tss" src="{tss_logo_uri}"/>' if tss_logo_uri else ''}
+    </div>
+  </div>
+</div>
+"""
+st.markdown(header_html, unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("Filters")
@@ -481,8 +538,8 @@ if area_choices:
         hide_index=True,
         column_config={
             selected_area: st.column_config.TextColumn(selected_area, width="medium"),
-            "Individuals": st.column_config.NumberColumn("Individuals", format="%d"),
-            "Households": st.column_config.NumberColumn("Households", format="%d"),
+            "Individuals": st.column_config.NumberColumn("Individuals", format="%,d"),
+            "Households": st.column_config.NumberColumn("Households", format="%,d"),
         },
     )
 else:
