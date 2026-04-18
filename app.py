@@ -40,6 +40,10 @@ st.markdown("""
 div[data-testid="stDataFrame"] [role="row"] {min-height: 28px !important;}
 section[data-testid="stSidebar"] .block-container {padding-top: 1rem;}
 section[data-testid="stSidebar"] {border-right: 1px solid #e7e0e0;}
+.cc-mini-table {width:100%; border-collapse:collapse; font-size:11px; margin-top:.3rem;}
+.cc-mini-table th {text-align:center; padding:4px 6px; color:#666; font-weight:700; border-bottom:1px solid #ece7e7;}
+.cc-mini-table td {text-align:center; padding:4px 6px; border-bottom:1px solid #f0ebeb;}
+.cc-swatch {display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; margin-right:6px; border:1px solid rgba(0,0,0,.08);}
 </style>
 """, unsafe_allow_html=True)
 
@@ -325,6 +329,21 @@ def dataframe_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Export") -> by
     return output.getvalue()
 
 
+def make_summary_table(df_chart: pd.DataFrame, label_col: str, value_col: str, colors: list[str]) -> str:
+    total = pd.to_numeric(df_chart[value_col], errors="coerce").fillna(0).sum()
+    headers = "<tr><th></th><th>{}</th><th>{}</th><th>%</th></tr>".format(label_col, value_col)
+    rows = []
+    for i, (_, row) in enumerate(df_chart.iterrows()):
+        val = float(pd.to_numeric(row[value_col], errors="coerce"))
+        pct = 0 if total == 0 else (val / total) * 100
+        color = colors[i] if i < len(colors) else "#999999"
+        rows.append(
+            f"<tr><td><span class='cc-swatch' style='background:{color};'></span></td>"
+            f"<td>{row[label_col]}</td><td>{val:,.0f}</td><td>{pct:.1f}%</td></tr>"
+        )
+    return f"<table class='cc-mini-table'><thead>{headers}</thead><tbody>{''.join(rows)}</tbody></table>"
+
+
 def pie_chart_with_table(df_chart: pd.DataFrame, label_col: str, value_col: str, title: str, color_mode: str):
     st.markdown(f'<div class="small-header">{title}</div>', unsafe_allow_html=True)
     if df_chart.empty:
@@ -347,16 +366,11 @@ def pie_chart_with_table(df_chart: pd.DataFrame, label_col: str, value_col: str,
     ).properties(height=220)
 
     st.altair_chart(chart, use_container_width=True)
-
-    display_df = chart_df[[label_col, value_col]].copy()
-    display_df[value_col] = pd.to_numeric(display_df[value_col], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
-    st.dataframe(display_df, use_container_width=True, hide_index=True, height=180)
+    st.markdown(make_summary_table(chart_df, label_col, value_col, colors), unsafe_allow_html=True)
 
 
-# Load data with temporary messages that disappear
 loading_box = st.empty()
 loading_box.markdown('<div class="top-shell"><div class="small-header">Candidate Connect</div><div class="tiny-muted">Web dashboard for filters, charts, and exports</div></div>', unsafe_allow_html=True)
-
 status_box = st.empty()
 status_box.markdown('<div class="section-card"><div class="small-header">Loading data from Google Drive...</div></div>', unsafe_allow_html=True)
 
@@ -370,7 +384,6 @@ except Exception as e:
 loading_box.empty()
 status_box.empty()
 
-# Permanent header
 st.markdown('<div class="top-shell"><div class="small-header">Candidate Connect</div><div class="tiny-muted">Web dashboard for filters, charts, and exports</div></div>', unsafe_allow_html=True)
 
 with st.sidebar:
@@ -398,7 +411,6 @@ if age_range is not None:
 
 filtered = filtered.reset_index(drop=True)
 
-# Metrics
 metric_cols = st.columns(7, gap="small")
 metric_values = [
     ("Voters", f"{len(filtered):,}"),
@@ -413,7 +425,6 @@ for col, (label, value) in zip(metric_cols, metric_values):
     with col:
         st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
 
-# Charts
 chart_cols = st.columns(3, gap="medium")
 
 party_df = filtered["Party"].value_counts().rename_axis("Party").reset_index(name="Count") if "Party" in filtered.columns else pd.DataFrame(columns=["Party", "Count"])
@@ -436,7 +447,6 @@ with chart_cols[2]:
     pie_chart_with_table(age_df, "Age Range", "Count", "Age Range Breakdown", "age")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Counts by area
 st.markdown('<div class="table-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Counts by Area</div>', unsafe_allow_html=True)
 area_choices = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in filtered.columns]
@@ -444,19 +454,17 @@ if area_choices:
     selected_area = st.selectbox("Area", area_choices, label_visibility="collapsed")
     area_df = build_area_summary(filtered, selected_area).copy()
     for col in ["Individuals", "Households"]:
-        area_df[col] = pd.to_numeric(area_df[col], errors="coerce").fillna(0).astype(int)
+        area_df[col] = pd.to_numeric(area_df[col], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
     st.dataframe(area_df, use_container_width=True, hide_index=True)
 else:
     st.caption("No area columns found")
 st.markdown('</div>', unsafe_allow_html=True)
 
-# Preview
 st.markdown('<div class="table-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Preview</div>', unsafe_allow_html=True)
 st.dataframe(filtered.head(100), use_container_width=True, hide_index=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# Exports at bottom
 st.markdown('<div class="export-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
 st.markdown('<div class="export-note">Web version downloads files directly through your browser.</div>', unsafe_allow_html=True)
@@ -474,29 +482,11 @@ mail_xlsx = dataframe_to_excel_bytes(mail_df, "Mail File")
 texting_csv = texting_df.to_csv(index=False).encode("utf-8")
 
 with ex2:
-    st.download_button(
-        "Download Mail CSV",
-        data=mail_csv,
-        file_name="candidate_connect_mail_file.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-    st.download_button(
-        "Download Mail Excel",
-        data=mail_xlsx,
-        file_name="candidate_connect_mail_file.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
+    st.download_button("Download Mail CSV", data=mail_csv, file_name="candidate_connect_mail_file.csv", mime="text/csv", use_container_width=True)
+    st.download_button("Download Mail Excel", data=mail_xlsx, file_name="candidate_connect_mail_file.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
 with ex3:
-    st.download_button(
-        "Download Texting CSV",
-        data=texting_csv,
-        file_name="candidate_connect_texting_file.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
+    st.download_button("Download Texting CSV", data=texting_csv, file_name="candidate_connect_texting_file.csv", mime="text/csv", use_container_width=True)
     st.caption(f"Mail rows: {len(mail_df):,} | Text rows: {len(texting_df):,}")
 
 st.markdown('</div>', unsafe_allow_html=True)
