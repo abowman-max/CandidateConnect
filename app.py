@@ -11,7 +11,7 @@ import streamlit as st
 st.set_page_config(page_title="Candidate Connect", layout="wide")
 
 # R2 public-read setup
-R2_BASE = "https://pub-a9e33b718082407cbd85e7b86b0fcb5c.r2.dev"
+R2_BASE = "https://b1017650e855cac9d9605c7f4e9647a1.r2.cloudflarestorage.com"
 R2_BUCKET = "candidate-connect-data"
 
 LOCAL_ROOT = Path("/tmp/candidate_connect_r2")
@@ -113,7 +113,7 @@ def ensure_parent(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
 
 def r2_public_url(key: str) -> str:
-    return f"{R2_BASE}/{key}"
+    return f"{R2_BASE}/{R2_BUCKET}/{key}"
 
 def download_public_object(key: str, local_path: Path):
     if local_path.exists():
@@ -343,7 +343,10 @@ def query_metrics(active, columns):
         f"""
         SELECT
             count(*) AS voters,
-            count(DISTINCT coalesce(nullif(_HouseholdKey, ''), cast(row_number() over() as varchar))) AS households,
+            (
+                count(DISTINCT _HouseholdKey) FILTER (WHERE _HouseholdKey IS NOT NULL AND _HouseholdKey <> '')
+                + count(*) FILTER (WHERE _HouseholdKey IS NULL OR _HouseholdKey = '')
+            ) AS households,
             sum(CASE WHEN _HasEmail THEN 1 ELSE 0 END) AS emails,
             sum(CASE WHEN _HasLandline THEN 1 ELSE 0 END) AS landlines,
             sum(CASE WHEN _HasMobile THEN 1 ELSE 0 END) AS mobiles,
@@ -379,7 +382,10 @@ def query_area_summary(active, columns, area_col):
         SELECT
             coalesce(cast({quote_ident(area_col)} as varchar), '(Blank)') AS "{area_col}",
             count(*) AS Individuals,
-            count(DISTINCT coalesce(nullif(_HouseholdKey, ''), cast(row_number() over() as varchar))) AS Households
+            (
+                count(DISTINCT _HouseholdKey) FILTER (WHERE _HouseholdKey IS NOT NULL AND _HouseholdKey <> '')
+                + count(*) FILTER (WHERE _HouseholdKey IS NULL OR _HouseholdKey = '')
+            ) AS Households
         FROM voters
         {where_sql}
         GROUP BY 1
