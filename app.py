@@ -99,11 +99,14 @@ def get_s3_client():
         endpoint_url=R2_ENDPOINT,
         aws_access_key_id=st.secrets["R2_ACCESS_KEY_ID"],
         aws_secret_access_key=st.secrets["R2_SECRET_ACCESS_KEY"],
-        region_name="auto",
+        region_name="us-east-1",
         config=Config(
             signature_version="s3v4",
             s3={"addressing_style": "path"},
+            retries={"max_attempts": 3},
         ),
+        use_ssl=True,
+        verify=True,
     )
 
 @st.cache_resource(show_spinner=False)
