@@ -3,16 +3,17 @@ from pathlib import Path
 import base64
 
 import altair as alt
-import boto3
-from botocore.config import Config
 import duckdb
 import pandas as pd
+import requests
 import streamlit as st
 
 st.set_page_config(page_title="Candidate Connect", layout="wide")
 
+# R2 public-read setup
+R2_BASE = "https://pub-a9e33b718082407cbd85e7b86b0fcb5c.r2.dev"
 R2_BUCKET = "candidate-connect-data"
-R2_ENDPOINT = "https://b1017650e855cac9d9605c7f4e9647a1.r2.cloudflarestorage.com"
+
 LOCAL_ROOT = Path("/tmp/candidate_connect_r2")
 LOCAL_MANIFEST = LOCAL_ROOT / "dataset_manifest.json"
 
@@ -51,7 +52,7 @@ st.markdown("""
 .logo-tss {max-width:102px; height:auto; display:block; margin:0 auto;}
 .section-divider {height:1px; background:linear-gradient(to right, rgba(0,0,0,0), #d7d1d1 12%, #d7d1d1 88%, rgba(0,0,0,0)); margin:.5rem 0 .8rem 0;}
 .sidebar-note {font-size:10px; color:#687487; margin-top:-.25rem; margin-bottom:.4rem;}
-.stButton > button, .stDownloadButton > button {width:100%; border-radius:9px; min-height: 2.1rem; font-weight: 600;}
+.stButton > button {width:100%; border-radius:9px; min-height: 2.1rem; font-weight: 600;}
 .cc-mini-table {width:100%; border-collapse:collapse; font-size:11px; margin-top:.35rem;}
 .cc-mini-table th {text-align:center; padding:4px 6px; color:#364152; font-weight:800; border-bottom:1px solid #ece7e7;}
 .cc-mini-table td {padding:4px 6px; border-bottom:1px solid #f0ebeb;}
@@ -76,12 +77,12 @@ def img_to_data_uri(path: Path) -> str:
 
 def file_modified_text(path: Path) -> str:
     if not path.exists():
-        return "R2 source"
+        return "R2 public source"
     try:
         ts = pd.Timestamp(path.stat().st_mtime, unit="s")
         return ts.strftime("%m/%d/%Y %I:%M %p")
     except Exception:
-        return "R2 source"
+        return "R2 public source"
 
 def divider():
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -91,23 +92,6 @@ def quote_ident(name: str) -> str:
 
 def sql_string_literal(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
-
-@st.cache_resource(show_spinner=False)
-def get_s3_client():
-    return boto3.client(
-        "s3",
-        endpoint_url=R2_ENDPOINT,
-        aws_access_key_id=st.secrets["R2_ACCESS_KEY_ID"],
-        aws_secret_access_key=st.secrets["R2_SECRET_ACCESS_KEY"],
-        region_name="us-east-1",
-        config=Config(
-            signature_version="s3v4",
-            s3={"addressing_style": "path"},
-            retries={"max_attempts": 3},
-        ),
-        use_ssl=True,
-        verify=True,
-    )
 
 @st.cache_resource(show_spinner=False)
 def get_conn():
@@ -128,16 +112,25 @@ def first_existing(columns, candidates):
 def ensure_parent(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
 
-def download_r2_object(key: str, local_path: Path):
+def r2_public_url(key: str) -> str:
+    return f"{R2_BASE}/{R2_BUCKET}/{key}"
+
+def download_public_object(key: str, local_path: Path):
     if local_path.exists():
         return
     ensure_parent(local_path)
-    get_s3_client().download_file(R2_BUCKET, key, str(local_path))
+    url = r2_public_url(key)
+    with requests.get(url, stream=True, timeout=120) as resp:
+        resp.raise_for_status()
+        with open(local_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
 
 @st.cache_data(show_spinner=True)
 def load_manifest():
     LOCAL_ROOT.mkdir(parents=True, exist_ok=True)
-    download_r2_object("dataset_manifest.json", LOCAL_MANIFEST)
+    download_public_object("dataset_manifest.json", LOCAL_MANIFEST)
     return json.loads(LOCAL_MANIFEST.read_text(encoding="utf-8"))
 
 @st.cache_data(show_spinner=True)
@@ -147,7 +140,7 @@ def ensure_index_shards():
     for shard in manifest["index"]["shards"]:
         key = shard["key"]
         local_path = LOCAL_ROOT / key
-        download_r2_object(key, local_path)
+        download_public_object(key, local_path)
         local_paths.append(str(local_path))
     return local_paths, manifest
 
@@ -263,63 +256,51 @@ def sql_literal_list(values):
 def current_filter_clause(active, columns):
     where = ["_Status = 'A'"]
     params = []
-
     geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in columns]
     for col in geo_cols:
         picked = active.get(col, [])
         if picked:
             where.append(f"{quote_ident(col)} IN ({sql_literal_list(picked)})")
             params.extend(picked)
-
     if active.get("party_pick"):
         picked = active["party_pick"]
         where.append(f"_PartyNorm IN ({sql_literal_list(picked)})")
         params.extend(picked)
-
     if active.get("hh_party_pick") and "HH-Party" in columns:
         picked = active["hh_party_pick"]
         where.append(f'{quote_ident("HH-Party")} IN ({sql_literal_list(picked)})')
         params.extend(picked)
-
     if active.get("calc_party_pick") and "CalculatedParty" in columns:
         picked = active["calc_party_pick"]
         where.append(f'{quote_ident("CalculatedParty")} IN ({sql_literal_list(picked)})')
         params.extend(picked)
-
     if active.get("gender_pick"):
         picked = active["gender_pick"]
         where.append(f"_Gender IN ({sql_literal_list(picked)})")
         params.extend(picked)
-
     if active.get("age_range_pick"):
         picked = active["age_range_pick"]
         where.append(f"_AgeRange IN ({sql_literal_list(picked)})")
         params.extend(picked)
-
     if active.get("age_slider") is not None:
         where.append("_AgeNum >= ? AND _AgeNum <= ?")
         params.extend([active["age_slider"][0], active["age_slider"][1]])
-
     if active.get("vote_history_pick"):
         picked = active["vote_history_pick"]
         where.append(f"_VoteHistory IN ({sql_literal_list(picked)})")
         params.extend(picked)
-
     if active.get("has_email") == "Has Email":
         where.append("_HasEmail = true")
     elif active.get("has_email") == "No Email":
         where.append("_HasEmail = false")
-
     if active.get("has_landline") == "Has Landline":
         where.append("_HasLandline = true")
     elif active.get("has_landline") == "No Landline":
         where.append("_HasLandline = false")
-
     if active.get("has_mobile") == "Has Mobile":
         where.append("_HasMobile = true")
     elif active.get("has_mobile") == "No Mobile":
         where.append("_HasMobile = false")
-
     return " WHERE " + " AND ".join(where), params
 
 def get_distinct_options(column: str, label_expr: str | None = None):
@@ -341,14 +322,12 @@ def get_basic_options(columns):
     geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in columns]
     for col in geo_cols:
         options[col] = get_distinct_options(col)
-
     options["party_vals"] = get_distinct_options("_PartyNorm", "_PartyNorm") if "Party" in columns else []
     options["gender_vals"] = get_distinct_options("_Gender", "_Gender")
     options["age_range_vals"] = get_distinct_options("_AgeRange", "_AgeRange")
     options["hh_party_vals"] = get_distinct_options("HH-Party") if "HH-Party" in columns else []
     options["calc_party_vals"] = get_distinct_options("CalculatedParty") if "CalculatedParty" in columns else []
     options["vote_history_vals"] = get_distinct_options("_VoteHistory", "_VoteHistory") if "V4A" in columns else []
-
     con = get_conn()
     age_min, age_max = con.execute(
         "SELECT min(_AgeNum), max(_AgeNum) FROM voters WHERE _Status = 'A' AND _AgeNum IS NOT NULL"
@@ -463,7 +442,7 @@ header_html = f"""
     <div class="brand-center">
       <div class="brand-title">Candidate Connect</div>
       <div class="brand-sub">DuckDB + R2 Pass 1: Fast counts and filters on R2 index shards</div>
-      <div class="brand-status">Storage: Cloudflare R2 &nbsp;&nbsp;|&nbsp;&nbsp; Last Local Manifest: {file_modified_text(LOCAL_MANIFEST)}</div>
+      <div class="brand-status">Storage: Cloudflare R2 Public Read &nbsp;&nbsp;|&nbsp;&nbsp; Last Local Manifest: {file_modified_text(LOCAL_MANIFEST)}</div>
     </div>
     <div class="brand-right"><div class="powered-by">Powered By</div>{f'<img class="logo-tss" src="{tss_logo_uri}"/>' if tss_logo_uri else ''}</div>
   </div>
@@ -484,7 +463,7 @@ if "options" not in st.session_state:
 
 with st.sidebar:
     st.header("Filters")
-    st.markdown('<div class="sidebar-note">DuckDB pass 1 now reads the index shard set from Cloudflare R2. Exports and PDF are intentionally disabled in this pass.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-note">This version uses public HTTPS downloads from Cloudflare R2 instead of boto3. Make sure your R2 bucket is Public Read enabled.</div>', unsafe_allow_html=True)
 
     if not st.session_state.data_loaded:
         if st.button("Load Voter Data", use_container_width=True, type="primary"):
@@ -563,7 +542,7 @@ if not st.session_state.data_loaded:
         with col:
             st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
     divider()
-    st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to load</div><div class="tiny-muted">Click <strong>Load Voter Data</strong> in the sidebar to open the R2 index shards with DuckDB. This pass only enables fast counts, charts, and area summaries.</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to load</div><div class="tiny-muted">Click <strong>Load Voter Data</strong> in the sidebar to open the R2 index shards with DuckDB.</div></div>', unsafe_allow_html=True)
     st.stop()
 
 if not st.session_state.filters_applied:
@@ -634,6 +613,3 @@ if area_choices:
 else:
     st.caption("No area columns found")
 st.markdown('</div>', unsafe_allow_html=True)
-
-divider()
-st.markdown('<div class="section-card"><div class="small-header">Pass 1 Status</div><div class="tiny-muted">Exports, report generation, and PDF output are intentionally disabled in this DuckDB pass. Once this version proves stable on R2 full data, the next pass can add exports.</div></div>', unsafe_allow_html=True)
