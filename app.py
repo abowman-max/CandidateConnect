@@ -4,6 +4,7 @@ import base64
 
 import altair as alt
 import boto3
+from botocore.config import Config
 import duckdb
 import pandas as pd
 import streamlit as st
@@ -92,8 +93,6 @@ def sql_string_literal(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 @st.cache_resource(show_spinner=False)
-from botocore.config import Config
-
 def get_s3_client():
     return boto3.client(
         "s3",
