@@ -1,16 +1,20 @@
-
-import streamlit as st
-import pandas as pd
-import duckdb
-import gdown
+import json
 from pathlib import Path
-import altair as alt
 import base64
+
+import altair as alt
+import boto3
+import duckdb
+import pandas as pd
+import streamlit as st
 
 st.set_page_config(page_title="Candidate Connect", layout="wide")
 
-INDEX_FILE_ID = "1JzgyjjMOcGyvYj_2wlsEmT4RhC3x1hGr"
-LOCAL_INDEX = Path("/tmp/candidate_connect_index.parquet")
+R2_BUCKET = "candidate-connect-data"
+R2_ENDPOINT = "https://b1017650e855cac9d9605c7f4e9647a1.r2.cloudflarestorage.com"
+LOCAL_ROOT = Path("/tmp/candidate_connect_r2")
+LOCAL_MANIFEST = LOCAL_ROOT / "dataset_manifest.json"
+
 CC_LOGO = Path("candidate_connect_logo.png")
 TSS_LOGO = Path("TSS_Logo_Transparent.png")
 
@@ -69,28 +73,33 @@ def img_to_data_uri(path: Path) -> str:
     encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
     return f"data:image/png;base64,{encoded}"
 
-def smart_title(val):
-    if pd.isna(val):
-        return ""
-    text = str(val).strip()
-    if not text or text.lower() == "nan":
-        return ""
-    return " ".join(word.capitalize() for word in text.replace("_", " ").split())
-
 def file_modified_text(path: Path) -> str:
     if not path.exists():
-        return "Google Drive source"
+        return "R2 source"
     try:
         ts = pd.Timestamp(path.stat().st_mtime, unit="s")
         return ts.strftime("%m/%d/%Y %I:%M %p")
     except Exception:
-        return "Google Drive source"
+        return "R2 source"
 
 def divider():
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
 def quote_ident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
+
+def sql_string_literal(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+@st.cache_resource(show_spinner=False)
+def get_s3_client():
+    return boto3.client(
+        "s3",
+        endpoint_url=R2_ENDPOINT,
+        aws_access_key_id=st.secrets["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=st.secrets["R2_SECRET_ACCESS_KEY"],
+        region_name="auto",
+    )
 
 @st.cache_resource(show_spinner=False)
 def get_conn():
@@ -108,23 +117,40 @@ def first_existing(columns, candidates):
             return hit
     return None
 
+def ensure_parent(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+def download_r2_object(key: str, local_path: Path):
+    if local_path.exists():
+        return
+    ensure_parent(local_path)
+    get_s3_client().download_file(R2_BUCKET, key, str(local_path))
+
 @st.cache_data(show_spinner=True)
-def ensure_index_download(file_id: str) -> str:
-    url = f"https://drive.google.com/uc?id={file_id}"
-    if not LOCAL_INDEX.exists():
-        gdown.download(url=url, output=str(LOCAL_INDEX), quiet=False)
-    return str(LOCAL_INDEX)
+def load_manifest():
+    LOCAL_ROOT.mkdir(parents=True, exist_ok=True)
+    download_r2_object("dataset_manifest.json", LOCAL_MANIFEST)
+    return json.loads(LOCAL_MANIFEST.read_text(encoding="utf-8"))
+
+@st.cache_data(show_spinner=True)
+def ensure_index_shards():
+    manifest = load_manifest()
+    local_paths = []
+    for shard in manifest["index"]["shards"]:
+        key = shard["key"]
+        local_path = LOCAL_ROOT / key
+        download_r2_object(key, local_path)
+        local_paths.append(str(local_path))
+    return local_paths, manifest
 
 @st.cache_data(show_spinner=False)
-def get_schema(path: str):
+def get_schema(local_paths):
     con = get_conn()
-    df = con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [path]).df()
+    paths_sql = "[" + ", ".join(sql_string_literal(p) for p in local_paths) + "]"
+    df = con.execute(f"DESCRIBE SELECT * FROM read_parquet({paths_sql})").df()
     return df["column_name"].tolist()
 
-def sql_string_literal(value: str) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
-
-def build_view_sql(columns, path: str):
+def build_view_sql(columns, local_paths):
     q = quote_ident
     status_col = first_existing(columns, ["VoterStatus", "voterstatus"])
     gender_col = first_existing(columns, ["Gender", "Sex"])
@@ -137,7 +163,6 @@ def build_view_sql(columns, path: str):
     mobile_col = first_existing(columns, ["Mobile"])
     vote_hist_col = first_existing(columns, ["V4A"])
     age_col = first_existing(columns, ["Age"])
-
     house_col = first_existing(columns, ["House Number"])
     street_col = first_existing(columns, ["Street Name"])
     apt_col = first_existing(columns, ["Apartment Number"])
@@ -175,9 +200,7 @@ def build_view_sql(columns, path: str):
         exprs.append("NULL::DOUBLE as _AgeNum")
 
     if age_range_col:
-        exprs.append(
-            f"nullif(trim(coalesce(cast({q(age_range_col)} as varchar), '')), '') as _AgeRange"
-        )
+        exprs.append(f"nullif(trim(coalesce(cast({q(age_range_col)} as varchar), '')), '') as _AgeRange")
     else:
         exprs.append("NULL::VARCHAR as _AgeRange")
 
@@ -205,24 +228,25 @@ def build_view_sql(columns, path: str):
     if hh_col:
         exprs.append(f"nullif(trim(coalesce(cast({q(hh_col)} as varchar), '')), '') as _HouseholdKey")
     else:
-        pieces = []
+        parts = []
         if house_col:
-            pieces.append(f"coalesce(cast({q(house_col)} as varchar), '')")
+            parts.append(f"coalesce(cast({q(house_col)} as varchar), '')")
         if street_col:
-            pieces.append(f"coalesce(cast({q(street_col)} as varchar), '')")
+            parts.append(f"coalesce(cast({q(street_col)} as varchar), '')")
         if apt_col:
-            pieces.append(f"coalesce(cast({q(apt_col)} as varchar), '')")
-        if pieces:
-            exprs.append("concat_ws('|', " + ", ".join(pieces) + ") as _HouseholdKey")
+            parts.append(f"coalesce(cast({q(apt_col)} as varchar), '')")
+        if parts:
+            exprs.append("concat_ws('|', " + ", ".join(parts) + ") as _HouseholdKey")
         else:
             exprs.append("NULL::VARCHAR as _HouseholdKey")
 
-    return "CREATE OR REPLACE VIEW voters AS SELECT\n    " + ",\n    ".join(exprs) + "\nFROM read_parquet(" + sql_string_literal(path) + ")"
+    paths_sql = "[" + ", ".join(sql_string_literal(p) for p in local_paths) + "]"
+    return "CREATE OR REPLACE VIEW voters AS SELECT\n    " + ",\n    ".join(exprs) + f"\nFROM read_parquet({paths_sql})"
 
-def prepare_db(path: str):
+def prepare_db(local_paths):
     con = get_conn()
-    cols = get_schema(path)
-    con.execute(build_view_sql(cols, path))
+    cols = get_schema(local_paths)
+    con.execute(build_view_sql(cols, local_paths))
     return cols
 
 def sql_literal_list(values):
@@ -312,7 +336,7 @@ def get_basic_options(columns):
 
     options["party_vals"] = get_distinct_options("_PartyNorm", "_PartyNorm") if "Party" in columns else []
     options["gender_vals"] = get_distinct_options("_Gender", "_Gender")
-    options["age_range_vals"] = get_distinct_options("_AgeRange", "_AgeRange") if "_AgeRange" else []
+    options["age_range_vals"] = get_distinct_options("_AgeRange", "_AgeRange")
     options["hh_party_vals"] = get_distinct_options("HH-Party") if "HH-Party" in columns else []
     options["calc_party_vals"] = get_distinct_options("CalculatedParty") if "CalculatedParty" in columns else []
     options["vote_history_vals"] = get_distinct_options("_VoteHistory", "_VoteHistory") if "V4A" in columns else []
@@ -430,8 +454,8 @@ header_html = f"""
     <div class="brand-left">{f'<img class="logo-cc" src="{cc_logo_uri}"/>' if cc_logo_uri else ''}</div>
     <div class="brand-center">
       <div class="brand-title">Candidate Connect</div>
-      <div class="brand-sub">DuckDB Pass 1: Fast counts and filters on the index file</div>
-      <div class="brand-status">Data Source: Google Drive index parquet only &nbsp;&nbsp;|&nbsp;&nbsp; Last Local File: {file_modified_text(LOCAL_INDEX)}</div>
+      <div class="brand-sub">DuckDB + R2 Pass 1: Fast counts and filters on R2 index shards</div>
+      <div class="brand-status">Storage: Cloudflare R2 &nbsp;&nbsp;|&nbsp;&nbsp; Last Local Manifest: {file_modified_text(LOCAL_MANIFEST)}</div>
     </div>
     <div class="brand-right"><div class="powered-by">Powered By</div>{f'<img class="logo-tss" src="{tss_logo_uri}"/>' if tss_logo_uri else ''}</div>
   </div>
@@ -452,19 +476,19 @@ if "options" not in st.session_state:
 
 with st.sidebar:
     st.header("Filters")
-    st.markdown('<div class="sidebar-note">DuckDB pass 1 loads only the index file. Exports and PDF are intentionally disabled in this pass.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-note">DuckDB pass 1 now reads the index shard set from Cloudflare R2. Exports and PDF are intentionally disabled in this pass.</div>', unsafe_allow_html=True)
 
     if not st.session_state.data_loaded:
         if st.button("Load Voter Data", use_container_width=True, type="primary"):
-            with st.spinner("Downloading and opening index data..."):
-                index_path = ensure_index_download(INDEX_FILE_ID)
-                st.session_state.columns = prepare_db(index_path)
+            with st.spinner("Downloading manifest and opening R2 index shards..."):
+                local_paths, _manifest = ensure_index_shards()
+                st.session_state.columns = prepare_db(local_paths)
                 st.session_state.options = get_basic_options(st.session_state.columns)
                 st.session_state.data_loaded = True
                 st.session_state.filters_applied = False
             st.rerun()
     else:
-        st.success("Index data loaded")
+        st.success("R2 index shards loaded")
 
         cols = st.session_state.columns
         opts = st.session_state.options
@@ -531,7 +555,7 @@ if not st.session_state.data_loaded:
         with col:
             st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
     divider()
-    st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to load</div><div class="tiny-muted">Click <strong>Load Voter Data</strong> in the sidebar to open the DuckDB index file. This pass only enables fast counts, charts, and area summaries.</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to load</div><div class="tiny-muted">Click <strong>Load Voter Data</strong> in the sidebar to open the R2 index shards with DuckDB. This pass only enables fast counts, charts, and area summaries.</div></div>', unsafe_allow_html=True)
     st.stop()
 
 if not st.session_state.filters_applied:
@@ -604,4 +628,4 @@ else:
 st.markdown('</div>', unsafe_allow_html=True)
 
 divider()
-st.markdown('<div class="section-card"><div class="small-header">Pass 1 Status</div><div class="tiny-muted">Exports, report generation, and PDF output are intentionally disabled in this DuckDB pass. Once this version proves stable on full data, the next pass will add exports.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="section-card"><div class="small-header">Pass 1 Status</div><div class="tiny-muted">Exports, report generation, and PDF output are intentionally disabled in this DuckDB pass. Once this version proves stable on R2 full data, the next pass can add exports.</div></div>', unsafe_allow_html=True)
