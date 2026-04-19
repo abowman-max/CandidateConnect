@@ -113,7 +113,7 @@ def ensure_parent(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
 
 def r2_public_url(key: str) -> str:
-    return f"{R2_BASE}/{R2_BUCKET}/{key}"
+    return f"{R2_BASE}/{key}"
 
 def download_public_object(key: str, local_path: Path):
     if local_path.exists():
