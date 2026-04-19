@@ -92,6 +92,8 @@ def sql_string_literal(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 @st.cache_resource(show_spinner=False)
+from botocore.config import Config
+
 def get_s3_client():
     return boto3.client(
         "s3",
@@ -99,6 +101,7 @@ def get_s3_client():
         aws_access_key_id=st.secrets["R2_ACCESS_KEY_ID"],
         aws_secret_access_key=st.secrets["R2_SECRET_ACCESS_KEY"],
         region_name="auto",
+        config=Config(signature_version="s3v4"),
     )
 
 @st.cache_resource(show_spinner=False)
