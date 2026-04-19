@@ -121,7 +121,10 @@ def get_schema(path: str):
     df = con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [path]).df()
     return df["column_name"].tolist()
 
-def build_view_sql(columns):
+def sql_string_literal(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+def build_view_sql(columns, path: str):
     q = quote_ident
     status_col = first_existing(columns, ["VoterStatus", "voterstatus"])
     gender_col = first_existing(columns, ["Gender", "Sex"])
@@ -214,12 +217,12 @@ def build_view_sql(columns):
         else:
             exprs.append("NULL::VARCHAR as _HouseholdKey")
 
-    return "CREATE OR REPLACE VIEW voters AS SELECT\n    " + ",\n    ".join(exprs) + "\nFROM read_parquet(?)"
+    return "CREATE OR REPLACE VIEW voters AS SELECT\n    " + ",\n    ".join(exprs) + "\nFROM read_parquet(" + sql_string_literal(path) + ")"
 
 def prepare_db(path: str):
     con = get_conn()
     cols = get_schema(path)
-    con.execute(build_view_sql(cols), [path])
+    con.execute(build_view_sql(cols, path))
     return cols
 
 def sql_literal_list(values):
