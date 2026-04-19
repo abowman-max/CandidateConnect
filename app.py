@@ -100,7 +100,10 @@ def get_s3_client():
         aws_access_key_id=st.secrets["R2_ACCESS_KEY_ID"],
         aws_secret_access_key=st.secrets["R2_SECRET_ACCESS_KEY"],
         region_name="auto",
-        config=Config(signature_version="s3v4"),
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+        ),
     )
 
 @st.cache_resource(show_spinner=False)
