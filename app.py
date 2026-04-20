@@ -566,22 +566,20 @@ def build_household_mail_name(group: pd.DataFrame) -> str:
     if len(unique_last) == 1:
         return f"{unique_last[0]} Household"
 
-    first_names = safe_group_series(group, "FirstName")
-    display_names = [x for x in first_names.tolist() if x]
-    if len(display_names) >= 2:
-        unique_display = []
-        seen = set()
-        for name in display_names:
-            key = name.lower()
-            if key not in seen:
-                unique_display.append(name)
-                seen.add(key)
-        if len(unique_display) == 2:
-            return f"{unique_display[0]} and {unique_display[1]}"
-        if len(unique_display) == 3:
-            return f"{unique_display[0]}, {unique_display[1]} and {unique_display[2]}"
-        if len(unique_display) > 3:
-            return f"{unique_display[0]}, {unique_display[1]} and Family"
+    full_names = []
+    seen = set()
+    for name in names:
+        key = name.lower()
+        if key not in seen:
+            full_names.append(name)
+            seen.add(key)
+
+    if len(full_names) == 2:
+        return f"{full_names[0]} and {full_names[1]}"
+    if len(full_names) == 3:
+        return f"{full_names[0]}, {full_names[1]} and {full_names[2]}"
+    if len(full_names) > 3:
+        return f"{full_names[0]}, {full_names[1]} and Family"
 
     return "Current Resident"
 
