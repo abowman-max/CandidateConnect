@@ -601,21 +601,23 @@ def normalize_state_value(value: str) -> str:
     return STATE_ABBR.get(s, s[:2] if len(s) >= 2 else s)
 
 def normalize_address_value(value: str) -> str:
-    s = collapse_spaces(value).upper()
+    s = collapse_spaces(value)
     if not s:
         return ""
-    s = re.sub(r"\bAPARTMENT\b", "APT", s)
-    s = re.sub(r"\bUNIT\b", "UNIT", s)
-    s = re.sub(r"\bSUITE\b", "STE", s)
-    parts = s.split(" ")
-    if parts:
-        last = parts[-1]
-        last_clean = re.sub(r"[^A-Z]", "", last)
-        if last_clean in USPS_SUFFIX_MAP:
-            parts[-1] = USPS_SUFFIX_MAP[last_clean]
-    s = " ".join(parts)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+
+    s = re.sub(r"Apartment", "Apt", s, flags=re.IGNORECASE)
+    s = re.sub(r"Suite", "Ste", s, flags=re.IGNORECASE)
+    s = re.sub(r"Unit", "Unit", s, flags=re.IGNORECASE)
+
+    words = s.split(" ")
+    words = [proper_case_word(w) for w in words]
+
+    if words:
+        last = re.sub(r"[^A-Za-z]", "", words[-1]).upper()
+        if last in USPS_SUFFIX_MAP:
+            words[-1] = USPS_SUFFIX_MAP[last].title()
+
+    return " ".join(words)
 
 def normalize_mail_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
