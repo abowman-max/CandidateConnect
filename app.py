@@ -668,8 +668,8 @@ def build_mail_export(active_filters, householded=False):
     city_col = first_existing_detail(df.columns.tolist(), ["MailingCity", "Mailing City", "City", "MailCity"])
     state_col = first_existing_detail(df.columns.tolist(), ["MailingState", "Mailing State", "State", "MailState"])
     zip_col = first_existing_detail(df.columns.tolist(), ["MailingZip", "Mailing Zip", "ZIP", "Zip", "ZipCode", "ZIPCODE", "MailZip"])
-    df["CityOut"] = df[city_col] if city_col else ""
-    df["StateOut"] = df[state_col] if state_col else ""
+    df["CityOut"] = df[city_col].apply(normalize_export_text) if city_col else ""
+    df["StateOut"] = df[state_col].apply(normalize_export_text) if state_col else ""
     df["ZipOut"] = df[zip_col].apply(clean_zip_value) if zip_col else ""
 
     out = df[["Name", "Address1", "CityOut", "StateOut", "ZipOut"]].copy()
@@ -682,11 +682,17 @@ def build_mail_export(active_filters, householded=False):
     if householded:
         key = "_HouseholdKey" if "_HouseholdKey" in df.columns else None
         temp = pd.concat([df.reset_index(drop=True), out.reset_index(drop=True)], axis=1)
-        temp["_hh_fallback"] = temp["Address1"].astype(str) + "|" + temp["Zip"].astype(str)
+
+        address_text = temp["Address1"].apply(normalize_export_text)
+        zip_text = temp["Zip"].apply(clean_zip_value)
+        fallback_key = address_text + "|" + zip_text
+
         if key:
-            grp_key = temp[key].fillna("").replace("", pd.NA).fillna(temp["_hh_fallback"])
+            base_key = temp[key].apply(normalize_export_text)
+            grp_key = base_key.where(base_key != "", fallback_key)
         else:
-            grp_key = temp["_hh_fallback"]
+            grp_key = fallback_key
+
         temp["_grp"] = grp_key
 
         grouped_rows = []
