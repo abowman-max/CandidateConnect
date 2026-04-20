@@ -1433,7 +1433,7 @@ def generate_street_list_pdf_bytes(active_filters):
                 for label in ["F", "A", "U", "NH", "Yard Sign"]:
                     c.rect(cols[label], y - 6, 8, 8, fill=0, stroke=1)
 
-                c.drawString(cols["MB_Perm"], y - 1, truncate_text(row["MB_Perm"], 1))
+                c.drawString(cols["MB_Perm"], y - 1, truncate_text(get_mb_perm_display(row), 1))
                 y -= row_h
 
         draw_footer(c, page_num, total_pages, printed_date)
