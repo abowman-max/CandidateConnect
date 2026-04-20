@@ -1632,6 +1632,169 @@ def generate_walk_sheet_pdf_bytes(active_filters):
     c.save()
     return buffer.getvalue()
 
+
+
+def _summary_count_df(active_filters, columns, group_expr, label_alias="Label", include_blank=True):
+    con = get_conn()
+    where_sql, params = current_filter_clause(active_filters, columns)
+    blank_filter = "" if include_blank else f" AND {group_expr} IS NOT NULL AND trim(cast({group_expr} as varchar)) <> ''"
+    return con.execute(
+        f"""
+        SELECT
+            coalesce(nullif(trim(cast({group_expr} as varchar)), ''), 'Blank/Unknown') AS {quote_ident(label_alias)},
+            count(*) AS Count
+        FROM voters
+        {where_sql}
+        {blank_filter}
+        GROUP BY 1
+        ORDER BY Count DESC, 1
+        """,
+        params,
+    ).df()
+
+
+def _summary_age_df(active_filters, columns):
+    con = get_conn()
+    where_sql, params = current_filter_clause(active_filters, columns)
+    return con.execute(
+        f"""
+        SELECT
+            case
+                when _AgeNum IS NULL then 'Blank/Unknown'
+                when _AgeNum < 18 then 'Under 18'
+                when _AgeNum <= 24 then '18-24'
+                when _AgeNum <= 34 then '25-34'
+                when _AgeNum <= 44 then '35-44'
+                when _AgeNum <= 54 then '45-54'
+                when _AgeNum <= 64 then '55-64'
+                when _AgeNum <= 74 then '65-74'
+                else '75+'
+            end AS AgeBucket,
+            count(*) AS Count,
+            case
+                when _AgeNum IS NULL then 99
+                when _AgeNum < 18 then 1
+                when _AgeNum <= 24 then 2
+                when _AgeNum <= 34 then 3
+                when _AgeNum <= 44 then 4
+                when _AgeNum <= 54 then 5
+                when _AgeNum <= 64 then 6
+                when _AgeNum <= 74 then 7
+                else 8
+            end AS SortKey
+        FROM voters
+        {where_sql}
+        GROUP BY 1, 3
+        ORDER BY SortKey
+        """,
+        params,
+    ).df()[["AgeBucket", "Count"]]
+
+
+def generate_summary_report_pdf_bytes(active_filters, columns):
+    metrics = query_metrics(active_filters, columns)
+    party_df = _summary_count_df(active_filters, columns, "_PartyNorm", "Value")
+    gender_df = _summary_count_df(active_filters, columns, "_Gender", "Value")
+    age_df = _summary_age_df(active_filters, columns)
+    filter_lines = build_filter_summary_lines(active_filters)
+    printed_dt = datetime.now().strftime("%m/%d/%Y %I:%M %p")
+
+    buffer = BytesIO()
+    page_size = landscape(letter)
+    width, height = page_size
+    c = canvas.Canvas(buffer, pagesize=page_size)
+
+    def section_bar(y, title):
+        c.setFillColor(REPORT_NAVY)
+        c.roundRect(26, y - 14, width - 52, 18, 6, fill=1, stroke=0)
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(34, y - 9, title)
+
+    def draw_simple_table(x, y_top, headers, rows, col_widths, row_h=16, font_size=8):
+        table_w = sum(col_widths)
+        c.setFillColor(REPORT_NAVY)
+        c.rect(x, y_top - row_h, table_w, row_h, fill=1, stroke=0)
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", font_size)
+        cursor = x
+        for idx, head in enumerate(headers):
+            if idx == len(headers) - 1:
+                c.drawRightString(cursor + col_widths[idx] - 6, y_top - 11, str(head))
+            else:
+                c.drawString(cursor + 6, y_top - 11, str(head))
+            cursor += col_widths[idx]
+
+        y = y_top - row_h
+        for i, row in enumerate(rows):
+            y -= row_h
+            fill = REPORT_LIGHT if i % 2 == 0 else colors.white
+            c.setFillColor(fill)
+            c.rect(x, y, table_w, row_h, fill=1, stroke=0)
+            c.setStrokeColor(REPORT_GRID)
+            c.rect(x, y, table_w, row_h, fill=0, stroke=1)
+            c.setFillColor(colors.black)
+            c.setFont("Helvetica", font_size)
+            cursor = x
+            for idx, cell in enumerate(row):
+                cell_text = truncate_text(cell, 48)
+                if idx == len(row) - 1:
+                    c.drawRightString(cursor + col_widths[idx] - 6, y + 4, cell_text)
+                else:
+                    c.drawString(cursor + 6, y + 4, cell_text)
+                cursor += col_widths[idx]
+        return y
+
+    draw_brand(c, height - 18)
+    c.setFillColor(REPORT_NAVY)
+    c.setFont("Helvetica-Bold", 20)
+    c.drawString(28, height - 58, "Candidate Connect Summary Report")
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica", 10)
+    c.drawString(28, height - 74, f"Generated: {printed_dt}")
+
+    section_bar(height - 96, "Overview")
+    overview_rows = [
+        ["Total Voters", f"{int(metrics.get('voters', 0)):,}"],
+        ["Total Households", f"{int(metrics.get('households', 0)):,}"],
+        ["With Email", f"{int(metrics.get('emails', 0)):,}"],
+        ["With Landline", f"{int(metrics.get('landlines', 0)):,}"],
+        ["With Mobile", f"{int(metrics.get('mobiles', 0)):,}"],
+    ]
+    draw_simple_table(28, height - 104, ["Metric", "Value"], overview_rows, [180, 90])
+
+    section_bar(height - 228, "Selected Filters")
+    if not filter_lines:
+        filter_lines = ["No additional filters selected"]
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica", 9)
+    fy = height - 250
+    for line in filter_lines[:10]:
+        c.drawString(34, fy, u"• " + truncate_text(line, 135))
+        fy -= 14
+
+    left_x = 28
+    right_x = 405
+    top_y = height - 410
+
+    section_bar(top_y, "Party Breakdown")
+    party_rows = [[str(r["Value"]), f"{int(r['Count']):,}"] for _, r in party_df.iterrows()] or [["No data", "0"]]
+    y_end_left = draw_simple_table(left_x, top_y - 8, ["Value", "Count"], party_rows[:10], [180, 90])
+
+    section_bar(top_y, "Gender Breakdown")
+    gender_rows = [[str(r["Value"]), f"{int(r['Count']):,}"] for _, r in gender_df.iterrows()] or [["No data", "0"]]
+    y_end_right = draw_simple_table(right_x, top_y - 8, ["Value", "Count"], gender_rows[:10], [180, 90])
+
+    lower_top = min(y_end_left, y_end_right) - 26
+    section_bar(lower_top, "Age Breakdown")
+    age_rows = [[str(r["AgeBucket"]), f"{int(r['Count']):,}"] for _, r in age_df.iterrows()] or [["No data", "0"]]
+    draw_simple_table(28, lower_top - 8, ["Age Range", "Count"], age_rows[:10], [180, 90])
+
+    draw_footer(c, 1, 1, datetime.now().strftime("%m/%d/%Y"))
+    c.save()
+    return buffer.getvalue()
+
+
 cc_logo_uri = img_to_data_uri(CC_LOGO)
 tss_logo_uri = img_to_data_uri(TSS_LOGO)
 
@@ -1928,6 +2091,30 @@ with exp_cols[2]:
             use_container_width=True,
         )
 
+st.markdown('</div>', unsafe_allow_html=True)
+
+
+divider()
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown('<div class="small-header">Summary Report PDF</div>', unsafe_allow_html=True)
+st.caption("Builds a clean PDF summary of the current filtered universe with overview counts, selected filters, and party/gender/age breakdowns.")
+
+summary_cols = st.columns(2, gap="medium")
+with summary_cols[0]:
+    if st.button("Prepare Summary Report PDF", use_container_width=True):
+        with st.spinner("Building Summary Report PDF from current filtered universe..."):
+            pdf_bytes = generate_summary_report_pdf_bytes(active, cols)
+            st.session_state["summary_report_pdf_bytes"] = pdf_bytes
+
+with summary_cols[1]:
+    if "summary_report_pdf_bytes" in st.session_state and st.session_state["summary_report_pdf_bytes"]:
+        st.download_button(
+            "Download Summary Report PDF",
+            data=st.session_state["summary_report_pdf_bytes"],
+            file_name="candidate_connect_summary_report.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
 st.markdown('</div>', unsafe_allow_html=True)
 
 
