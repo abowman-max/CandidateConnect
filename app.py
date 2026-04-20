@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import base64
 import re
+import zipfile
 
 import altair as alt
 import duckdb
@@ -1009,6 +1010,142 @@ def build_mail_export(active_filters, householded=False):
 
 def dataframe_to_csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
+
+def sanitize_filename_part(value: str) -> str:
+    s = normalize_export_text(value)
+    s = re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("_")
+    return s or "blank"
+
+
+def choose_group_value(row, preferred_columns):
+    for col in preferred_columns:
+        if col in row and normalize_export_text(row.get(col, "")):
+            return normalize_export_text(row.get(col, ""))
+    return "(Blank)"
+
+
+def assign_turf_ids(df: pd.DataFrame, mode: str, target_size: int) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    out = df.copy()
+    out["_HouseholdKeySafe"] = out.get("_HouseholdKey", "").fillna("").astype(str).str.strip() if "_HouseholdKey" in out.columns else ""
+    if "Address1" not in out.columns:
+        out["Address1"] = out.apply(build_address_line1_row, axis=1)
+
+    if mode == "By Precinct":
+        group_vals = out.apply(lambda r: choose_group_value(r, ["Precinct"]), axis=1)
+        out["Turf_Group"] = group_vals
+        out["Turf_ID"] = out["Turf_Group"].apply(lambda v: f"Turf_{sanitize_filename_part(v)}")
+    elif mode == "By Municipality":
+        group_vals = out.apply(lambda r: choose_group_value(r, ["Municipality", "County"]), axis=1)
+        out["Turf_Group"] = group_vals
+        out["Turf_ID"] = out["Turf_Group"].apply(lambda v: f"Turf_{sanitize_filename_part(v)}")
+    else:
+        work = out.copy()
+        work["_DoorKey"] = work["_HouseholdKeySafe"]
+        blank_mask = work["_DoorKey"].eq("")
+        work.loc[blank_mask, "_DoorKey"] = work.loc[blank_mask, "Address1"].fillna("").astype(str)
+        household_sizes = work.groupby("_DoorKey", dropna=False).size().reset_index(name="_VoterCount")
+        household_sizes["_DoorCount"] = 1
+        household_sizes["_StreetSort"] = household_sizes["_DoorKey"].astype(str)
+        household_sizes = household_sizes.sort_values(["_StreetSort", "_DoorKey"], kind="stable").reset_index(drop=True)
+
+        turf_ids = []
+        turf_num = 1
+        current_size = 0
+        for _, hh in household_sizes.iterrows():
+            increment = int(hh["_DoorCount"] if mode == "Target Doors" else hh["_VoterCount"])
+            if current_size > 0 and current_size + increment > int(target_size):
+                turf_num += 1
+                current_size = 0
+            turf_ids.append(f"Turf_{turf_num:03d}")
+            current_size += increment
+        household_sizes["Turf_ID"] = turf_ids
+        out = out.merge(household_sizes[["_DoorKey", "Turf_ID"]], on="_DoorKey", how="left")
+        out["Turf_Group"] = out["Turf_ID"]
+
+    summary = (
+        out.groupby("Turf_ID", dropna=False)
+        .agg(
+            Voters=("Turf_ID", "size"),
+            Households=("_HouseholdKeySafe", lambda s: s.replace("", pd.NA).dropna().nunique() + (s.eq("").sum())),
+            Counties=("County", lambda s: ", ".join(sorted({normalize_export_text(v) for v in s if normalize_export_text(v)})[:4])),
+            Municipalities=("Municipality", lambda s: ", ".join(sorted({normalize_export_text(v) for v in s if normalize_export_text(v)})[:4])),
+            Precincts=("Precinct", lambda s: ", ".join(sorted({normalize_export_text(v) for v in s if normalize_export_text(v)})[:4])),
+        )
+        .reset_index()
+        .sort_values("Turf_ID")
+        .reset_index(drop=True)
+    )
+    out = out.merge(summary[["Turf_ID", "Voters", "Households"]], on="Turf_ID", how="left")
+    out = out.rename(columns={"Voters": "Turf_Voters", "Households": "Turf_Households"})
+    return out
+
+
+def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50):
+    df = fetch_filtered_detail(active_filters).copy()
+    if df.empty:
+        return b"", pd.DataFrame(columns=["Turf_ID", "Voters", "Households"])
+
+    df["Name"] = df.apply(full_name_from_row, axis=1)
+    df["Address1"] = df.apply(build_address_line1_row, axis=1)
+    city_col = first_existing_detail(df.columns.tolist(), ["MailingCity", "Mailing City", "City", "MailCity"])
+    state_col = first_existing_detail(df.columns.tolist(), ["MailingState", "Mailing State", "State", "MailState"])
+    zip_col = first_existing_detail(df.columns.tolist(), ["MailingZip", "Mailing Zip", "ZIP", "Zip", "ZipCode", "ZIPCODE", "MailZip"])
+    if city_col and "City" not in df.columns:
+        df["City"] = df[city_col]
+    if state_col and "State" not in df.columns:
+        df["State"] = df[state_col]
+    if zip_col and "Zip" not in df.columns:
+        df["Zip"] = df[zip_col]
+
+    pa_id_col = first_existing_detail(df.columns.tolist(), ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "Voter ID", "VoterID"])
+    if pa_id_col and pa_id_col != "PA_ID_Number":
+        df["PA_ID_Number"] = df[pa_id_col]
+    elif "PA_ID_Number" not in df.columns:
+        df["PA_ID_Number"] = ""
+
+    df = assign_turf_ids(df, mode=mode, target_size=target_size)
+
+    export_cols = [c for c in [
+        "Turf_ID", "Name", "PA_ID_Number", "Address1", "City", "State", "Zip",
+        "County", "Municipality", "Precinct", "Party", "Gender", "Age", "Mobile", "Landline"
+    ] if c in df.columns]
+
+    export_df = df[export_cols].copy()
+    export_df = normalize_filtered_export_dataframe(export_df)
+    if "Zip" in export_df.columns:
+        export_df["Zip"] = export_df["Zip"].apply(clean_zip_value)
+    if "Mobile" in export_df.columns:
+        export_df["Mobile"] = export_df["Mobile"].apply(clean_phone_value)
+    if "Landline" in export_df.columns:
+        export_df["Landline"] = export_df["Landline"].apply(clean_phone_value)
+
+    summary_df = (
+        df.groupby("Turf_ID", dropna=False)
+        .agg(
+            Voters=("Turf_ID", "size"),
+            Households=("_HouseholdKeySafe", lambda s: s.replace("", pd.NA).dropna().nunique() + (s.eq("").sum())),
+            Counties=("County", lambda s: ", ".join(sorted({normalize_export_text(v) for v in s if normalize_export_text(v)})[:4])),
+            Municipalities=("Municipality", lambda s: ", ".join(sorted({normalize_export_text(v) for v in s if normalize_export_text(v)})[:4])),
+            Precincts=("Precinct", lambda s: ", ".join(sorted({normalize_export_text(v) for v in s if normalize_export_text(v)})[:4])),
+        )
+        .reset_index()
+        .sort_values("Turf_ID")
+        .reset_index(drop=True)
+    )
+
+    zip_buffer = BytesIO()
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("turf_summary.csv", summary_df.to_csv(index=False))
+        zf.writestr("README.txt", "Candidate Connect Turf Packets\n\nThis zip contains one CSV per turf plus turf_summary.csv.\n")
+        for turf_id, turf_df in export_df.groupby("Turf_ID", sort=True, dropna=False):
+            safe_id = sanitize_filename_part(str(turf_id))
+            zf.writestr(f"turf_packets/{safe_id}.csv", turf_df.drop(columns=["Turf_ID"], errors="ignore").to_csv(index=False))
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue(), summary_df
 
 
 def normalize_mb_perm_value(val) -> str:
@@ -2073,7 +2210,7 @@ st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Output Center</div>', unsafe_allow_html=True)
 st.caption("Use tabs below to keep exports, reports, and saved universes organized.")
 
-output_tabs = st.tabs(["Exports", "Reports", "Saved Universes"])
+output_tabs = st.tabs(["Exports", "Reports", "Saved Universes", "Turf Builder"])
 
 with output_tabs[0]:
     st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
@@ -2271,5 +2408,50 @@ with output_tabs[2]:
                 st.rerun()
     else:
         st.caption("No saved universes yet.")
+
+
+with output_tabs[3]:
+    st.markdown('<div class="small-header">Turf Builder</div>', unsafe_allow_html=True)
+    st.caption("Build packet-style turf files. You will get one zip containing a summary plus one CSV per turf.")
+
+    turf_mode = st.selectbox(
+        "Split Method",
+        ["Target Doors", "Target Voters", "By Precinct", "By Municipality"],
+        key="turf_mode_select",
+    )
+
+    default_target = 50 if turf_mode == "Target Doors" else 100
+    target_size = st.slider(
+        "Target Size",
+        min_value=10,
+        max_value=500,
+        value=default_target,
+        step=5,
+        disabled=turf_mode in {"By Precinct", "By Municipality"},
+        key="turf_target_size",
+        help="Used only for Target Doors or Target Voters modes.",
+    )
+
+    turf_cols = st.columns([1, 1], gap="medium")
+    with turf_cols[0]:
+        if st.button("Prepare Turf Packet ZIP", use_container_width=True):
+            with st.spinner("Building per-turf packet files from filtered detail shards..."):
+                zip_bytes, summary_df = build_turf_packet_zip(active, mode=turf_mode, target_size=target_size)
+                st.session_state["turf_packet_zip_bytes"] = zip_bytes
+                st.session_state["turf_packet_summary_df"] = summary_df
+                st.session_state["turf_packet_mode"] = turf_mode
+    with turf_cols[1]:
+        if "turf_packet_zip_bytes" in st.session_state and st.session_state["turf_packet_zip_bytes"]:
+            st.download_button(
+                "Download Turf Packet ZIP",
+                data=st.session_state["turf_packet_zip_bytes"],
+                file_name="candidate_connect_turf_packets.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+
+    if "turf_packet_summary_df" in st.session_state and not st.session_state["turf_packet_summary_df"].empty:
+        st.caption(f"Generated using: {st.session_state.get('turf_packet_mode', turf_mode)}")
+        st.dataframe(st.session_state["turf_packet_summary_df"], use_container_width=True, hide_index=True)
 
 st.markdown('</div>', unsafe_allow_html=True)
