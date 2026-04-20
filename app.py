@@ -16,6 +16,10 @@ from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib import colors
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
+from reportlab.lib.units import inch
 
 st.set_page_config(page_title="Candidate Connect", layout="wide")
 
@@ -1696,64 +1700,120 @@ def generate_summary_report_pdf_bytes(active_filters, columns):
     party_df = _summary_count_df(active_filters, columns, "_PartyNorm", "Value")
     gender_df = _summary_count_df(active_filters, columns, "_Gender", "Value")
     age_df = _summary_age_df(active_filters, columns)
-    filter_lines = build_filter_summary_lines(active_filters)
+    filter_lines = build_filter_summary_lines(active_filters) or ["No additional filters selected"]
     printed_dt = datetime.now().strftime("%m/%d/%Y %I:%M %p")
 
     buffer = BytesIO()
-    page_size = landscape(letter)
-    width, height = page_size
-    c = canvas.Canvas(buffer, pagesize=page_size)
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(letter),
+        leftMargin=0.38 * inch,
+        rightMargin=0.38 * inch,
+        topMargin=0.34 * inch,
+        bottomMargin=0.42 * inch,
+    )
 
-    def section_bar(y, title):
-        c.setFillColor(REPORT_NAVY)
-        c.roundRect(26, y - 14, width - 52, 18, 6, fill=1, stroke=0)
-        c.setFillColor(colors.white)
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(34, y - 9, title)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "CCSummaryTitle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=22,
+        leading=24,
+        alignment=TA_LEFT,
+        textColor=REPORT_NAVY,
+        spaceAfter=2,
+    )
+    meta_style = ParagraphStyle(
+        "CCSummaryMeta",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10,
+        leading=12,
+        alignment=TA_LEFT,
+        textColor=colors.black,
+        spaceAfter=8,
+    )
+    section_style = ParagraphStyle(
+        "CCSummarySection",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=11,
+        leading=13,
+        alignment=TA_LEFT,
+        textColor=colors.white,
+        backColor=REPORT_NAVY,
+        leftIndent=6,
+        borderPadding=4,
+        spaceBefore=8,
+        spaceAfter=4,
+    )
+    small_style = ParagraphStyle(
+        "CCSummarySmall",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        leading=11,
+        textColor=colors.black,
+    )
+    bullet_style = ParagraphStyle(
+        "CCSummaryBullet",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        leading=12,
+        leftIndent=10,
+        bulletIndent=0,
+        textColor=colors.black,
+        spaceAfter=1,
+    )
 
-    def draw_simple_table(x, y_top, headers, rows, col_widths, row_h=16, font_size=8):
-        table_w = sum(col_widths)
-        c.setFillColor(REPORT_NAVY)
-        c.rect(x, y_top - row_h, table_w, row_h, fill=1, stroke=0)
-        c.setFillColor(colors.white)
-        c.setFont("Helvetica-Bold", font_size)
-        cursor = x
-        for idx, head in enumerate(headers):
-            if idx == len(headers) - 1:
-                c.drawRightString(cursor + col_widths[idx] - 6, y_top - 11, str(head))
-            else:
-                c.drawString(cursor + 6, y_top - 11, str(head))
-            cursor += col_widths[idx]
+    elements = []
 
-        y = y_top - row_h
-        for i, row in enumerate(rows):
-            y -= row_h
-            fill = REPORT_LIGHT if i % 2 == 0 else colors.white
-            c.setFillColor(fill)
-            c.rect(x, y, table_w, row_h, fill=1, stroke=0)
-            c.setStrokeColor(REPORT_GRID)
-            c.rect(x, y, table_w, row_h, fill=0, stroke=1)
-            c.setFillColor(colors.black)
-            c.setFont("Helvetica", font_size)
-            cursor = x
-            for idx, cell in enumerate(row):
-                cell_text = truncate_text(cell, 48)
-                if idx == len(row) - 1:
-                    c.drawRightString(cursor + col_widths[idx] - 6, y + 4, cell_text)
-                else:
-                    c.drawString(cursor + 6, y + 4, cell_text)
-                cursor += col_widths[idx]
-        return y
+    def make_table(headers, rows, col_widths):
+        safe_rows = rows if rows else [["No data", "0"]]
+        data = [headers] + safe_rows
+        tbl = Table(data, colWidths=col_widths, repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), REPORT_NAVY),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("LEADING", (0, 0), (-1, -1), 10),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.35, REPORT_GRID),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, REPORT_LIGHT]),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        return tbl
 
-    draw_brand(c, height - 18)
-    c.setFillColor(REPORT_NAVY)
-    c.setFont("Helvetica-Bold", 20)
-    c.drawString(28, height - 58, "Candidate Connect Summary Report")
-    c.setFillColor(colors.black)
-    c.setFont("Helvetica", 10)
-    c.drawString(28, height - 74, f"Generated: {printed_dt}")
+    left_logo = Image(str(CC_LOGO), width=1.10 * inch, height=0.43 * inch) if CC_LOGO.exists() else Paragraph("", small_style)
+    if TSS_LOGO.exists():
+        right = Table([
+            [Paragraph("Powered By", ParagraphStyle("pwr", parent=small_style, fontName="Helvetica-Bold", fontSize=8.5, alignment=TA_CENTER, textColor=REPORT_NAVY))],
+            [Image(str(TSS_LOGO), width=0.92 * inch, height=0.34 * inch)],
+        ], colWidths=[1.15 * inch])
+    else:
+        right = Paragraph("", small_style)
+    right_style_table = Table([[left_logo, right]], colWidths=[8.75 * inch, 1.15 * inch])
+    right_style_table.setStyle(TableStyle([
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("LEFTPADDING", (0,0), (-1,-1), 0),
+        ("RIGHTPADDING", (0,0), (-1,-1), 0),
+        ("TOPPADDING", (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+        ("ALIGN", (1,0), (1,0), "RIGHT"),
+    ]))
+    elements.append(right_style_table)
+    elements.append(Paragraph("Candidate Connect Summary Report", title_style))
+    elements.append(Paragraph(f"Generated: {printed_dt}", meta_style))
 
-    section_bar(height - 96, "Overview")
+    elements.append(Paragraph("Overview", section_style))
     overview_rows = [
         ["Total Voters", f"{int(metrics.get('voters', 0)):,}"],
         ["Total Households", f"{int(metrics.get('households', 0)):,}"],
@@ -1761,38 +1821,40 @@ def generate_summary_report_pdf_bytes(active_filters, columns):
         ["With Landline", f"{int(metrics.get('landlines', 0)):,}"],
         ["With Mobile", f"{int(metrics.get('mobiles', 0)):,}"],
     ]
-    draw_simple_table(28, height - 104, ["Metric", "Value"], overview_rows, [180, 90])
+    elements.append(make_table(["Metric", "Value"], overview_rows, [3.2 * inch, 1.2 * inch]))
+    elements.append(Spacer(1, 0.10 * inch))
 
-    section_bar(height - 228, "Selected Filters")
-    if not filter_lines:
-        filter_lines = ["No additional filters selected"]
-    c.setFillColor(colors.black)
-    c.setFont("Helvetica", 9)
-    fy = height - 250
-    for line in filter_lines[:10]:
-        c.drawString(34, fy, u"• " + truncate_text(line, 135))
-        fy -= 14
+    elements.append(Paragraph("Selected Filters", section_style))
+    for line in filter_lines[:12]:
+        elements.append(Paragraph(line, bullet_style, bulletText="•"))
+    elements.append(Spacer(1, 0.10 * inch))
 
-    left_x = 28
-    right_x = 405
-    top_y = height - 410
+    elements.append(Paragraph("Party Breakdown", section_style))
+    party_rows = [[str(r["Value"]), f"{int(r['Count']):,}"] for _, r in party_df.iterrows()]
+    elements.append(make_table(["Value", "Count"], party_rows, [3.2 * inch, 1.2 * inch]))
+    elements.append(Spacer(1, 0.10 * inch))
 
-    section_bar(top_y, "Party Breakdown")
-    party_rows = [[str(r["Value"]), f"{int(r['Count']):,}"] for _, r in party_df.iterrows()] or [["No data", "0"]]
-    y_end_left = draw_simple_table(left_x, top_y - 8, ["Value", "Count"], party_rows[:10], [180, 90])
+    elements.append(Paragraph("Gender Breakdown", section_style))
+    gender_rows = [[str(r["Value"]), f"{int(r['Count']):,}"] for _, r in gender_df.iterrows()]
+    elements.append(make_table(["Value", "Count"], gender_rows, [3.2 * inch, 1.2 * inch]))
+    elements.append(Spacer(1, 0.10 * inch))
 
-    section_bar(top_y, "Gender Breakdown")
-    gender_rows = [[str(r["Value"]), f"{int(r['Count']):,}"] for _, r in gender_df.iterrows()] or [["No data", "0"]]
-    y_end_right = draw_simple_table(right_x, top_y - 8, ["Value", "Count"], gender_rows[:10], [180, 90])
+    elements.append(Paragraph("Age Breakdown", section_style))
+    age_rows = [[str(r["AgeBucket"]), f"{int(r['Count']):,}"] for _, r in age_df.iterrows()]
+    elements.append(make_table(["Age Range", "Count"], age_rows, [3.2 * inch, 1.2 * inch]))
 
-    lower_top = min(y_end_left, y_end_right) - 26
-    section_bar(lower_top, "Age Breakdown")
-    age_rows = [[str(r["AgeBucket"]), f"{int(r['Count']):,}"] for _, r in age_df.iterrows()] or [["No data", "0"]]
-    draw_simple_table(28, lower_top - 8, ["Age Range", "Count"], age_rows[:10], [180, 90])
+    def add_page_number(canvas_obj, doc_obj):
+        page_w, _ = landscape(letter)
+        canvas_obj.setStrokeColor(REPORT_GRID)
+        canvas_obj.line(doc.leftMargin, 0.33 * inch, page_w - doc.rightMargin, 0.33 * inch)
+        canvas_obj.setFillColor(colors.black)
+        canvas_obj.setFont("Helvetica-Bold", 8)
+        canvas_obj.drawCentredString(page_w / 2, 0.18 * inch, f"{canvas_obj.getPageNumber()} of 1")
+        canvas_obj.drawRightString(page_w - doc.rightMargin, 0.18 * inch, f"Updated: {datetime.now().strftime('%m/%d/%Y')}")
 
-    draw_footer(c, 1, 1, datetime.now().strftime("%m/%d/%Y"))
-    c.save()
+    doc.build(elements, onFirstPage=add_page_number)
     return buffer.getvalue()
+
 
 
 cc_logo_uri = img_to_data_uri(CC_LOGO)
