@@ -2048,6 +2048,91 @@ mail_mode = st.radio(
     key="mail_mode_radio",
 )
 
+
+def wrap_label_lines(name: str, address1: str, city: str, state: str, zip_code: str):
+    city_state_zip = " ".join([part for part in [normalize_export_text(city), normalize_export_text(state), clean_zip_value(zip_code)] if part])
+    lines = [normalize_export_text(name), normalize_export_text(address1), city_state_zip]
+    return [line for line in lines if line]
+
+
+def generate_mailing_labels_pdf_bytes(active_filters, householded=False):
+    labels_df = build_mail_export(active_filters, householded=householded).copy()
+    if labels_df.empty:
+        return b""
+
+    labels_df = labels_df.fillna("")
+    buffer = BytesIO()
+    page_size = letter
+    c = canvas.Canvas(buffer, pagesize=page_size)
+    width, height = page_size
+
+    # Avery 5160 style layout: 3 columns x 10 rows
+    labels_per_page = 30
+    cols_per_page = 3
+    rows_per_page = 10
+    left_margin = 0.19 * 72
+    top_margin = 0.50 * 72
+    col_width = 2.625 * 72
+    row_height = 1.00 * 72
+    col_gap = 0.125 * 72
+
+    printable_top = height - top_margin
+    x_positions = [left_margin + i * (col_width + col_gap) for i in range(cols_per_page)]
+
+    total_pages = max(1, math.ceil(len(labels_df) / labels_per_page))
+    printed_date = datetime.now().strftime("%m/%d/%Y")
+
+    for page_idx in range(total_pages):
+        if page_idx > 0:
+            c.showPage()
+
+        start = page_idx * labels_per_page
+        end = min(start + labels_per_page, len(labels_df))
+        page_df = labels_df.iloc[start:end].reset_index(drop=True)
+
+        for i, (_, row) in enumerate(page_df.iterrows()):
+            row_idx = i // cols_per_page
+            col_idx = i % cols_per_page
+            x = x_positions[col_idx]
+            y_top = printable_top - row_idx * row_height
+
+            # text inset inside each label
+            text_x = x + 9
+            text_y = y_top - 15
+
+            lines = wrap_label_lines(
+                row.get("Name", ""),
+                row.get("Address1", ""),
+                row.get("City", ""),
+                row.get("State", ""),
+                row.get("Zip", ""),
+            )
+
+            c.setFillColor(colors.black)
+            c.setFont("Helvetica-Bold", 10)
+            if lines:
+                c.drawString(text_x, text_y, truncate_text(lines[0], 34))
+            c.setFont("Helvetica", 10)
+            if len(lines) > 1:
+                c.drawString(text_x, text_y - 13, truncate_text(lines[1], 34))
+            if len(lines) > 2:
+                c.drawString(text_x, text_y - 26, truncate_text(lines[2], 34))
+
+        c.setStrokeColor(REPORT_GRID)
+        c.line(24, 22, width - 24, 22)
+        c.setFillColor(colors.black)
+        c.setFont("Helvetica-Bold", 8)
+        mode = "Householded" if householded else "Individual"
+        c.drawString(28, 11, f"Mailing Labels ({mode})")
+        c.drawCentredString(width / 2, 11, f"{page_idx + 1} of {total_pages}")
+        c.drawRightString(width - 28, 11, f"Updated: {printed_date}")
+
+    c.save()
+    pdf = buffer.getvalue()
+    buffer.close()
+    return pdf
+
+
 exp_cols = st.columns(3, gap="medium")
 
 with exp_cols[0]:
@@ -2163,6 +2248,39 @@ with walk_cols[1]:
             "Download Walk Sheet PDF",
             data=st.session_state["walk_sheet_pdf_bytes"],
             file_name="candidate_connect_walk_sheet.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+st.markdown('</div>', unsafe_allow_html=True)
+
+
+divider()
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown('<div class="small-header">Mailing Labels PDF</div>', unsafe_allow_html=True)
+st.caption("Builds a print-ready Avery 5160-style PDF label sheet from the current mail export universe.")
+
+label_mode = st.radio(
+    "Label Mode",
+    ["Householded", "Individual"],
+    horizontal=True,
+    key="mail_labels_mode",
+)
+
+label_cols = st.columns(2, gap="medium")
+with label_cols[0]:
+    if st.button("Prepare Mailing Labels PDF", use_container_width=True):
+        with st.spinner("Building mailing labels PDF from filtered detail shards..."):
+            pdf_bytes = generate_mailing_labels_pdf_bytes(active, householded=(label_mode == "Householded"))
+            st.session_state["mailing_labels_pdf_bytes"] = pdf_bytes
+            st.session_state["mailing_labels_pdf_mode"] = label_mode
+
+with label_cols[1]:
+    if "mailing_labels_pdf_bytes" in st.session_state and st.session_state["mailing_labels_pdf_bytes"]:
+        suffix = "householded" if st.session_state.get("mailing_labels_pdf_mode") == "Householded" else "individual"
+        st.download_button(
+            "Download Mailing Labels PDF",
+            data=st.session_state["mailing_labels_pdf_bytes"],
+            file_name=f"candidate_connect_mailing_labels_{suffix}.pdf",
             mime="application/pdf",
             use_container_width=True,
         )
