@@ -166,7 +166,7 @@ def build_view_sql(columns, local_paths):
     vote_hist_col = first_existing(columns, ["V4A"])
     mib_applied_col = first_existing(columns, ["MIB_Applied"])
     mib_ballot_col = first_existing(columns, ["MIB_BALLOT"])
-    mb_score_col = first_existing(columns, ["MMB_AProp_Score"])
+    mb_score_col = first_existing(columns, ["MMB_AProp_Score", "MB_AProp_Score"])
     mb_perm_col = first_existing(columns, ["MB_PERM", "MB_Perm", "MB_Pern"])
     age_col = first_existing(columns, ["Age"])
     house_col = first_existing(columns, ["House Number"])
@@ -640,6 +640,10 @@ def build_detail_export_sql(detail_paths, active_filters):
     landline_col = first_existing_detail(columns, ["Landline"])
     mobile_col = first_existing_detail(columns, ["Mobile"])
     vote_hist_col = first_existing_detail(columns, ["V4A"])
+    mib_applied_col = first_existing_detail(columns, ["MIB_Applied"])
+    mib_ballot_col = first_existing_detail(columns, ["MIB_BALLOT"])
+    mb_score_col = first_existing_detail(columns, ["MMB_AProp_Score", "MB_AProp_Score"])
+    mb_perm_col = first_existing_detail(columns, ["MB_PERM", "MB_Perm", "MB_Pern"])
 
     exprs = ["*"]
     if status_col:
@@ -903,7 +907,7 @@ with st.sidebar:
                     if not isinstance(default_score, (list, tuple)) or len(default_score) != 2:
                         default_score = (lo, hi)
                     mb_score_slider = st.slider(
-                        "MB Probability Score",
+                        "MB Probability Score Slider",
                         min_value=lo,
                         max_value=hi,
                         value=(float(default_score[0]), float(default_score[1])),
@@ -945,6 +949,12 @@ with st.sidebar:
                 "age_range_pick": age_range_pick,
                 "age_slider": age_slider,
                 "vote_history_pick": vote_history_pick,
+                "vote_history_index_range": vote_idx_range,
+                "mib_applied_pick": mib_applied_pick,
+                "mib_ballot_pick": mib_ballot_pick,
+                "mb_perm_pick": mb_perm_pick,
+                "mb_score_slider": mb_score_slider,
+                "new_reg_months": new_reg_months,
                 "has_email": has_email,
                 "has_landline": has_landline,
                 "has_mobile": has_mobile,
