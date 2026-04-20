@@ -1,5 +1,6 @@
-streamlit
-pandas
-duckdb
 altair
-boto3
+duckdb
+pandas
+requests
+streamlit
+reportlab
