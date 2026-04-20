@@ -438,6 +438,187 @@ def pie_chart_with_table(df_chart: pd.DataFrame, label_col: str, value_col: str,
     st.altair_chart(chart, use_container_width=True)
     st.markdown(make_summary_table(chart_df, label_col, value_col, colors), unsafe_allow_html=True)
 
+
+def normalize_export_text(val):
+    if pd.isna(val):
+        return ""
+    s = str(val).strip()
+    if s.lower() in {"nan", "none"}:
+        return ""
+    return s
+
+def full_name_from_row(row):
+    parts = [
+        normalize_export_text(row.get("FirstName", "")),
+        normalize_export_text(row.get("MiddleName", "")),
+        normalize_export_text(row.get("LastName", "")),
+        normalize_export_text(row.get("NameSuffix", "")),
+    ]
+    return " ".join([p for p in parts if p]).strip()
+
+def build_address_line1_row(row):
+    parts = [
+        normalize_export_text(row.get("House Number", "")),
+        normalize_export_text(row.get("Street Name", "")),
+    ]
+    line1 = " ".join([p for p in parts if p]).strip()
+    apt = normalize_export_text(row.get("Apartment Number", ""))
+    if apt:
+        line1 = f"{line1} Apt {apt}".strip()
+    return line1
+
+def first_existing_detail(columns, candidates):
+    lower_map = {str(c).strip().lower(): c for c in columns}
+    for col in candidates:
+        if col in columns:
+            return col
+        hit = lower_map.get(str(col).strip().lower())
+        if hit is not None:
+            return hit
+    return None
+
+@st.cache_data(show_spinner=True)
+def ensure_detail_shards():
+    manifest = load_manifest()
+    local_paths = []
+    for shard in manifest["detail"]["shards"]:
+        key = shard["key"]
+        local_path = LOCAL_ROOT / key
+        download_public_object(key, local_path)
+        local_paths.append(str(local_path))
+    return local_paths, manifest
+
+def build_detail_export_sql(detail_paths, active_filters):
+    # Query detail shards directly and normalize a few helper fields in SQL.
+    paths_sql = "[" + ", ".join(sql_string_literal(p) for p in detail_paths) + "]"
+    columns = get_conn().execute(f"DESCRIBE SELECT * FROM read_parquet({paths_sql})").df()["column_name"].tolist()
+
+    q = quote_ident
+    status_col = first_existing_detail(columns, ["VoterStatus", "voterstatus"])
+    party_col = first_existing_detail(columns, ["Party"])
+    gender_col = first_existing_detail(columns, ["Gender", "Sex"])
+    age_col = first_existing_detail(columns, ["Age"])
+    hh_col = first_existing_detail(columns, ["HH_ID"])
+    email_col = first_existing_detail(columns, ["Email"])
+    landline_col = first_existing_detail(columns, ["Landline"])
+    mobile_col = first_existing_detail(columns, ["Mobile"])
+    vote_hist_col = first_existing_detail(columns, ["V4A"])
+
+    exprs = ["*"]
+    if status_col:
+        exprs.append(f"upper(trim(coalesce(cast({q(status_col)} as varchar), ''))) as _Status")
+    else:
+        exprs.append("'A' as _Status")
+
+    if party_col:
+        exprs.append(
+            f"""case
+                when upper(trim(coalesce(cast({q(party_col)} as varchar), ''))) in ('', 'NONE', 'NAN', 'U') then 'O'
+                else upper(trim(cast({q(party_col)} as varchar)))
+            end as _PartyNorm"""
+        )
+    else:
+        exprs.append("'O' as _PartyNorm")
+
+    if gender_col:
+        exprs.append(
+            f"""case
+                when upper(trim(coalesce(cast({q(gender_col)} as varchar), ''))) in ('', 'NONE', 'NAN') then 'U'
+                else upper(trim(cast({q(gender_col)} as varchar)))
+            end as _Gender"""
+        )
+    else:
+        exprs.append("'U' as _Gender")
+
+    if age_col:
+        exprs.append(f"try_cast({q(age_col)} as double) as _AgeNum")
+    else:
+        exprs.append("NULL::DOUBLE as _AgeNum")
+
+    for alias, src in [("_HasEmail", email_col), ("_HasLandline", landline_col), ("_HasMobile", mobile_col)]:
+        if src:
+            exprs.append(
+                f"""case
+                    when trim(coalesce(cast({q(src)} as varchar), '')) in ('', 'None', 'NONE', 'nan', 'NAN') then false
+                    else true
+                end as {alias}"""
+            )
+        else:
+            exprs.append(f"false as {alias}")
+
+    if vote_hist_col:
+        exprs.append(f"upper(trim(coalesce(cast({q(vote_hist_col)} as varchar), ''))) as _VoteHistory")
+    else:
+        exprs.append("'' as _VoteHistory")
+
+    if hh_col:
+        exprs.append(f"nullif(trim(coalesce(cast({q(hh_col)} as varchar), '')), '') as _HouseholdKey")
+    else:
+        exprs.append("NULL::VARCHAR as _HouseholdKey")
+
+    where_sql, params = current_filter_clause(active_filters, columns)
+    sql = "SELECT\n    " + ",\n    ".join(exprs) + f"\nFROM read_parquet({paths_sql})\n{where_sql}"
+    return sql, params, columns
+
+def fetch_filtered_detail(active_filters):
+    detail_paths, _ = ensure_detail_shards()
+    sql, params, _ = build_detail_export_sql(detail_paths, active_filters)
+    return get_conn().execute(sql, params).df()
+
+def build_filtered_csv_export(active_filters):
+    df = fetch_filtered_detail(active_filters)
+    return df
+
+def build_texting_export(active_filters):
+    df = fetch_filtered_detail(active_filters).copy()
+    if df.empty:
+        return pd.DataFrame(columns=["Name", "Mobile", "Party", "Age", "County", "Precinct"])
+    df["Name"] = df.apply(full_name_from_row, axis=1)
+    if "Mobile" not in df.columns:
+        df["Mobile"] = ""
+    cols = [c for c in ["Name", "Mobile", "Party", "Age", "County", "Precinct"] if c in df.columns]
+    out = df[cols].copy()
+    out = out[out["Mobile"].astype(str).str.strip() != ""]
+    return out.reset_index(drop=True)
+
+def build_mail_export(active_filters, householded=False):
+    df = fetch_filtered_detail(active_filters).copy()
+    if df.empty:
+        return pd.DataFrame(columns=["Name", "Address1", "City", "State", "Zip", "Party", "Age"])
+    df["Name"] = df.apply(full_name_from_row, axis=1)
+    df["Address1"] = df.apply(build_address_line1_row, axis=1)
+    city_col = first_existing_detail(df.columns.tolist(), ["MailingCity", "Mailing City", "City", "MailCity"])
+    state_col = first_existing_detail(df.columns.tolist(), ["MailingState", "Mailing State", "State", "MailState"])
+    zip_col = first_existing_detail(df.columns.tolist(), ["MailingZip", "Mailing Zip", "ZIP", "Zip", "ZipCode", "ZIPCODE", "MailZip"])
+
+    df["CityOut"] = df[city_col] if city_col else ""
+    df["StateOut"] = df[state_col] if state_col else ""
+    df["ZipOut"] = df[zip_col] if zip_col else ""
+
+    out = df[["Name", "Address1", "CityOut", "StateOut", "ZipOut"]].copy()
+    if "Party" in df.columns:
+        out["Party"] = df["Party"]
+    if "Age" in df.columns:
+        out["Age"] = df["Age"]
+
+    out = out.rename(columns={"CityOut": "City", "StateOut": "State", "ZipOut": "Zip"})
+
+    if householded:
+        key = "_HouseholdKey" if "_HouseholdKey" in df.columns else None
+        if key:
+            temp = pd.concat([df[[key]].reset_index(drop=True), out.reset_index(drop=True)], axis=1)
+            temp["_hh_fallback"] = temp["Address1"].astype(str) + "|" + temp["Zip"].astype(str)
+            grp_key = temp[key].fillna("").replace("", pd.NA).fillna(temp["_hh_fallback"])
+            temp["_grp"] = grp_key
+            temp = temp.sort_values(by=["_grp", "Name"])
+            temp = temp.drop_duplicates(subset=["_grp"], keep="first")
+            out = temp[out.columns].copy()
+
+    return out.reset_index(drop=True)
+
+def dataframe_to_csv_bytes(df):
+    return df.to_csv(index=False).encode("utf-8")
+
 cc_logo_uri = img_to_data_uri(CC_LOGO)
 tss_logo_uri = img_to_data_uri(TSS_LOGO)
 
@@ -618,4 +799,65 @@ if area_choices:
     st.markdown(table_html, unsafe_allow_html=True)
 else:
     st.caption("No area columns found")
+st.markdown('</div>', unsafe_allow_html=True)
+
+
+divider()
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
+st.caption("Export files are only built when you click the button for that export type.")
+
+mail_mode = st.radio(
+    "Mailing Mode",
+    ["Not Householded", "Householded"],
+    horizontal=True,
+    key="mail_mode_radio",
+)
+
+exp_cols = st.columns(3, gap="medium")
+
+with exp_cols[0]:
+    if st.button("Prepare Filtered CSV", use_container_width=True):
+        with st.spinner("Building filtered CSV from detail shards..."):
+            export_df = build_filtered_csv_export(active)
+            st.session_state["filtered_export_df"] = export_df
+    if "filtered_export_df" in st.session_state:
+        st.download_button(
+            "Download Filtered CSV",
+            data=dataframe_to_csv_bytes(st.session_state["filtered_export_df"]),
+            file_name="candidate_connect_filtered.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+with exp_cols[1]:
+    if st.button("Prepare Texting CSV", use_container_width=True):
+        with st.spinner("Building texting CSV from detail shards..."):
+            export_df = build_texting_export(active)
+            st.session_state["texting_export_df"] = export_df
+    if "texting_export_df" in st.session_state:
+        st.download_button(
+            "Download Texting CSV",
+            data=dataframe_to_csv_bytes(st.session_state["texting_export_df"]),
+            file_name="candidate_connect_texting.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+with exp_cols[2]:
+    if st.button("Prepare Mail CSV", use_container_width=True):
+        with st.spinner("Building mail CSV from detail shards..."):
+            export_df = build_mail_export(active, householded=(mail_mode == "Householded"))
+            st.session_state["mail_export_df"] = export_df
+            st.session_state["mail_export_mode"] = mail_mode
+    if "mail_export_df" in st.session_state:
+        suffix = "householded" if st.session_state.get("mail_export_mode") == "Householded" else "individual"
+        st.download_button(
+            "Download Mail CSV",
+            data=dataframe_to_csv_bytes(st.session_state["mail_export_df"]),
+            file_name=f"candidate_connect_mail_{suffix}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
 st.markdown('</div>', unsafe_allow_html=True)
