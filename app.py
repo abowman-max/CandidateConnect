@@ -3,7 +3,20 @@ from pathlib import Path
 import base64
 import re
 
-def collapse_spaces(value: str) -> str:
+def collapse_spaces
+
+def proper_case_word(word: str) -> str:
+    if not word:
+        return ""
+    word = str(word)
+    if word.upper() in {"JR","SR","II","III","IV","V"}:
+        return word.upper()
+    if "-" in word:
+        return "-".join([w.capitalize() for w in word.split("-")])
+    if "'" in word:
+        return "'".join([w.capitalize() for w in word.split("'")])
+    return word.capitalize()
+(value: str) -> str:
     if value is None:
         return ""
     return re.sub(r"\s+", " ", str(value)).strip()
