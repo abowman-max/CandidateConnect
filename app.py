@@ -2,6 +2,12 @@ import json
 from pathlib import Path
 import base64
 import re
+
+def collapse_spaces(value: str) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
 import io
 from datetime import datetime
 
