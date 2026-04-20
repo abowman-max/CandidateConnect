@@ -9,6 +9,12 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from io import BytesIO
+from datetime import datetime
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+
 st.set_page_config(page_title="Candidate Connect", layout="wide")
 
 # R2 public-read setup
@@ -959,6 +965,320 @@ def build_mail_export(active_filters, householded=False):
 def dataframe_to_csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
 
+
+def normalize_mb_perm_value(val) -> str:
+    s = normalize_export_text(val).upper()
+    if s in {"TRUE", "T", "YES", "Y", "1"}:
+        return "Y"
+    if s in {"FALSE", "F", "NO", "N", "0"}:
+        return "N"
+    return ""
+
+def choose_best_phone(row) -> str:
+    mobile = clean_phone_value(row.get("Mobile", ""))
+    landline = clean_phone_value(row.get("Landline", ""))
+    primary = clean_phone_value(row.get("PrimaryPhone", ""))
+    if mobile:
+        return f"({mobile[:3]}) {mobile[3:6]}-{mobile[6:]}" + " (m)" if len(mobile) == 10 else mobile + " (m)"
+    if landline:
+        return f"({landline[:3]}) {landline[3:6]}-{landline[6:]}" + " (l)" if len(landline) == 10 else landline + " (l)"
+    if primary:
+        return f"({primary[:3]}) {primary[3:6]}-{primary[6:]}" if len(primary) == 10 else primary
+    return ""
+
+def parse_house_number(value) -> int:
+    s = normalize_export_text(value)
+    m = re.search(r"\d+", s)
+    return int(m.group()) if m else 0
+
+def parse_apartment_sort(value) -> tuple:
+    s = normalize_export_text(value)
+    if not s:
+        return (0, "", 0)
+    m = re.match(r"([A-Za-z]*)(\d*)", s.replace(" ", ""))
+    if m:
+        prefix, num = m.groups()
+        return (1, prefix.upper(), int(num) if num else 0)
+    return (1, s.upper(), 0)
+
+def build_filter_summary_lines(active_filters: dict) -> list[str]:
+    lines = []
+    label_map = {
+        "County": "County",
+        "Municipality": "Municipality",
+        "Precinct": "Precinct",
+        "USC": "USC",
+        "STS": "STS",
+        "STH": "STH",
+        "School District": "School District",
+        "party_pick": "Party",
+        "hh_party_pick": "Household Party",
+        "calc_party_pick": "Calculated Party",
+        "gender_pick": "Gender",
+        "age_range_pick": "Age Range",
+        "vote_history_pick": "Vote History (V4A)",
+        "mib_applied_pick": "Mail Ballot Application",
+        "mib_ballot_pick": "Mail Ballot Vote Status",
+        "mb_perm_pick": "MB Perm",
+    }
+    for key, label in label_map.items():
+        val = active_filters.get(key)
+        if isinstance(val, list) and val:
+            lines.append(f"{label}: {', '.join(map(str, val[:8]))}" + (" ..." if len(val) > 8 else ""))
+    if active_filters.get("age_slider") is not None:
+        a0, a1 = active_filters["age_slider"]
+        lines.append(f"Age: {a0} to {a1}")
+    if active_filters.get("mb_score_slider") is not None:
+        s0, s1 = active_filters["mb_score_slider"]
+        lines.append(f"MB Probability Score: {s0:g} to {s1:g}")
+    if active_filters.get("new_reg_months", 0):
+        lines.append(f"Newly Registered: within last {active_filters['new_reg_months']} month(s)")
+    for key, label in [("has_email","Email"),("has_landline","Landline"),("has_mobile","Mobile")]:
+        val = active_filters.get(key)
+        if val and val != "All":
+            lines.append(f"{label}: {val}")
+    return lines or ["No additional filters selected"]
+
+def build_street_list_dataframe(active_filters):
+    df = fetch_filtered_detail(active_filters).copy()
+    if df.empty:
+        return pd.DataFrame(columns=[
+            "Precinct","StreetGroup","AddressLine","FullName","Phone","Party","Sex","Age",
+            "F","A","U","NH","Yard Sign","MB_Perm","HouseNumSort","AptSort"
+        ])
+
+    precinct_col = first_existing_detail(df.columns.tolist(), ["Precinct"])
+    street_col = first_existing_detail(df.columns.tolist(), ["Street Name"])
+    house_col = first_existing_detail(df.columns.tolist(), ["House Number"])
+    apt_col = first_existing_detail(df.columns.tolist(), ["Apartment Number"])
+    sex_col = first_existing_detail(df.columns.tolist(), ["Gender", "Sex"])
+    age_col = first_existing_detail(df.columns.tolist(), ["Age"])
+    party_col = first_existing_detail(df.columns.tolist(), ["Party"])
+    mb_perm_col = first_existing_detail(df.columns.tolist(), ["MB_PERM", "MB_Perm", "MB_Pern"])
+
+    out = pd.DataFrame()
+    out["Precinct"] = df[precinct_col].apply(normalize_export_text) if precinct_col else ""
+    out["StreetGroup"] = df[street_col].apply(normalize_address_value) if street_col else ""
+    house_vals = df[house_col].apply(normalize_export_text) if house_col else pd.Series([""] * len(df))
+    apt_vals = df[apt_col].apply(normalize_export_text) if apt_col else pd.Series([""] * len(df))
+    out["AddressLine"] = house_vals + " " + out["StreetGroup"]
+    out.loc[apt_vals != "", "AddressLine"] = out.loc[apt_vals != "", "AddressLine"] + " Apt " + apt_vals[apt_vals != ""]
+    out["AddressLine"] = out["AddressLine"].apply(collapse_spaces).apply(normalize_address_value)
+    out["FullName"] = df.apply(full_name_from_row, axis=1).apply(normalize_name_value)
+    out["Phone"] = df.apply(choose_best_phone, axis=1)
+    out["Party"] = df[party_col].apply(normalize_export_text) if party_col else ""
+    out["Sex"] = df[sex_col].apply(normalize_export_text) if sex_col else ""
+    out["Age"] = df[age_col].apply(lambda v: normalize_numeric_string(v)) if age_col else ""
+    out["F"] = ""
+    out["A"] = ""
+    out["U"] = ""
+    out["NH"] = ""
+    out["Yard Sign"] = ""
+    out["MB_Perm"] = df[mb_perm_col].apply(normalize_mb_perm_value) if mb_perm_col else ""
+    out["HouseNumSort"] = house_vals.apply(parse_house_number)
+    out["AptSort"] = apt_vals.apply(parse_apartment_sort)
+
+    out = out.sort_values(by=["Precinct", "StreetGroup", "HouseNumSort", "AptSort", "FullName"], kind="stable").reset_index(drop=True)
+    return out
+
+def build_precinct_summary(street_df: pd.DataFrame) -> pd.DataFrame:
+    if street_df.empty:
+        return pd.DataFrame(columns=["Precinct","Individuals","Households"])
+    temp = street_df.copy()
+    temp["_hh"] = temp["Precinct"].astype(str) + "|" + temp["AddressLine"].astype(str)
+    grp = temp.groupby("Precinct", dropna=False).agg(
+        Individuals=("FullName","count"),
+        Households=("_hh", lambda s: s.nunique())
+    ).reset_index()
+    grp = grp.sort_values("Precinct").reset_index(drop=True)
+    return grp
+
+def draw_footer(c, page_num, total_pages, printed_date):
+    c.setFont("Helvetica", 8)
+    c.drawCentredString(letter[0] / 2, 18, f"{page_num} of {total_pages}")
+    c.drawRightString(letter[0] - 36, 18, f"Updated: {printed_date}")
+
+def draw_brand(c, y_top):
+    try:
+        if CC_LOGO.exists():
+            c.drawImage(ImageReader(str(CC_LOGO)), 36, y_top - 32, width=95, height=28, preserveAspectRatio=True, mask='auto')
+    except Exception:
+        pass
+    try:
+        if TSS_LOGO.exists():
+            c.drawImage(ImageReader(str(TSS_LOGO)), letter[0] - 115, y_top - 30, width=80, height=24, preserveAspectRatio=True, mask='auto')
+    except Exception:
+        pass
+    c.setFont("Helvetica-Bold", 9)
+    c.drawRightString(letter[0] - 36, y_top - 8, "Powered By")
+
+def estimate_street_pdf_pages(summary_df: pd.DataFrame, street_df: pd.DataFrame):
+    pages = 1  # cover
+    rows_per_summary_page = 38
+    pages += max(1, math.ceil(len(summary_df) / rows_per_summary_page)) if len(summary_df) else 1
+
+    usable_top = 710
+    usable_bottom = 45
+    line_h = 12
+    rows_per_page = int((usable_top - usable_bottom) / line_h)
+
+    for precinct, grp in street_df.groupby("Precinct", sort=False):
+        used = 0
+        first_page = True
+        for street, sg in grp.groupby("StreetGroup", sort=False):
+            needed = 1 + len(sg)  # street line + voter rows
+            if first_page:
+                header_need = 2
+            else:
+                header_need = 2
+            if used == 0:
+                used = header_need
+            if used + needed > rows_per_page:
+                pages += 1
+                used = header_need
+                first_page = False
+            elif first_page and pages == 0:
+                pages += 1
+            used += needed
+        pages += 1  # first precinct page or accumulated
+    return pages
+
+def generate_street_list_pdf_bytes(active_filters):
+    street_df = build_street_list_dataframe(active_filters)
+    if street_df.empty:
+        return b""
+
+    summary_df = build_precinct_summary(street_df)
+    county_desc = ", ".join(active_filters.get("County", [])) if active_filters.get("County") else "Selected Area"
+    party_desc = ", ".join(active_filters.get("party_pick", [])) if active_filters.get("party_pick") else "Filtered Voters"
+    printed_date = datetime.now().strftime("%m/%d/%Y")
+    filter_lines = build_filter_summary_lines(active_filters)
+
+    total_pages = estimate_street_pdf_pages(summary_df, street_df)
+
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    page_num = 1
+
+    # Cover page
+    draw_brand(c, height - 24)
+    c.setFont("Helvetica-Bold", 24)
+    c.drawString(50, height - 90, county_desc if county_desc else "Street List")
+    c.setFont("Helvetica", 11)
+    c.drawString(50, height - 115, printed_date)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, height - 150, f"{party_desc} in {county_desc}")
+    totals_hh = summary_df["Households"].sum() if len(summary_df) else 0
+    totals_ind = summary_df["Individuals"].sum() if len(summary_df) else 0
+    c.setFont("Helvetica", 12)
+    c.drawString(50, height - 172, f"Individuals: {totals_ind:,} Households: {totals_hh:,}")
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(50, height - 210, "Filters Used")
+    c.setFont("Helvetica", 10)
+    y = height - 228
+    for line in filter_lines:
+        c.drawString(60, y, f"• {line}")
+        y -= 14
+        if y < 60:
+            break
+    draw_footer(c, page_num, total_pages, printed_date)
+    c.showPage()
+    page_num += 1
+
+    # Summary pages
+    rows_per_summary_page = 38
+    for start in range(0, max(len(summary_df),1), rows_per_summary_page):
+        draw_brand(c, height - 24)
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(50, height - 70, "Precinct Counts Summary")
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(50, height - 95, "Precinct")
+        c.drawRightString(470, height - 95, "Individuals")
+        c.drawRightString(560, height - 95, "Households")
+        y = height - 112
+        chunk = summary_df.iloc[start:start+rows_per_summary_page] if len(summary_df) else pd.DataFrame(columns=summary_df.columns)
+        c.setFont("Helvetica", 10)
+        for _, row in chunk.iterrows():
+            c.drawString(50, y, str(row["Precinct"]))
+            c.drawRightString(470, y, f"{int(row['Individuals']):,}")
+            c.drawRightString(560, y, f"{int(row['Households']):,}")
+            y -= 14
+        draw_footer(c, page_num, total_pages, printed_date)
+        c.showPage()
+        page_num += 1
+
+    # Precinct sections
+    col_x = {
+        "Full Name": 40, "Phone": 220, "Party": 340, "Sex": 372, "Age": 402,
+        "F": 432, "A": 452, "U": 472, "NH": 492, "Yard Sign": 520, "MB_Perm": 570
+    }
+    rows_per_page = 50
+
+    for precinct, grp in street_df.groupby("Precinct", sort=False):
+        page_in_precinct = 0
+        used_rows = 99999
+        current_street = None
+        for idx, row in grp.iterrows():
+            need_new_page = used_rows >= rows_per_page
+            if current_street != row["StreetGroup"] and used_rows + 2 > rows_per_page:
+                need_new_page = True
+
+            if need_new_page:
+                if page_in_precinct > 0:
+                    c.showPage()
+                    page_num += 1
+                draw_brand(c, height - 24)
+                page_in_precinct += 1
+                title = precinct if page_in_precinct == 1 else f"{precinct} (cont)"
+                c.bookmarkPage(f"precinct_{precinct}") if page_in_precinct == 1 else None
+                if page_in_precinct == 1:
+                    try:
+                        c.addOutlineEntry(str(precinct), f"precinct_{precinct}", level=0, closed=False)
+                    except Exception:
+                        pass
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(50, height - 68, title)
+                c.setFont("Helvetica-Bold", 8)
+                y_hdr = height - 88
+                for label, x in col_x.items():
+                    c.drawString(x, y_hdr, label)
+                used_rows = 0
+                current_street = None
+
+            y_base = height - 106 - used_rows * 12
+            if current_street != row["StreetGroup"]:
+                c.setFont("Helvetica-Bold", 10)
+                c.drawString(50, y_base, row["StreetGroup"])
+                used_rows += 1
+                y_base = height - 106 - used_rows * 12
+                current_street = row["StreetGroup"]
+
+            c.setFont("Helvetica", 9)
+            c.drawString(col_x["Full Name"], y_base, row["AddressLine"])
+            c.drawString(col_x["Phone"], y_base, "")
+            used_rows += 1
+            y_row = height - 106 - used_rows * 12
+
+            c.drawString(col_x["Full Name"], y_row, str(row["FullName"])[:32])
+            c.drawString(col_x["Phone"], y_row, str(row["Phone"])[:18])
+            c.drawString(col_x["Party"], y_row, str(row["Party"])[:2])
+            c.drawString(col_x["Sex"], y_row, str(row["Sex"])[:1])
+            c.drawString(col_x["Age"], y_row, str(row["Age"])[:3])
+
+            # checkbox columns empty
+            for label in ["F","A","U","NH","Yard Sign"]:
+                c.rect(col_x[label], y_row-2, 8, 8)
+            c.drawString(col_x["MB_Perm"], y_row, str(row["MB_Perm"])[:1])
+
+            used_rows += 1
+            draw_footer(c, page_num, total_pages, printed_date)
+
+        # footer already drawn on page
+
+    c.save()
+    return buffer.getvalue()
+
 cc_logo_uri = img_to_data_uri(CC_LOGO)
 tss_logo_uri = img_to_data_uri(TSS_LOGO)
 
@@ -1255,4 +1575,28 @@ with exp_cols[2]:
             use_container_width=True,
         )
 
+st.markdown('</div>', unsafe_allow_html=True)
+
+
+divider()
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown('<div class="small-header">Street List PDF</div>', unsafe_allow_html=True)
+st.caption("Builds a compact precinct-grouped PDF with cover page, counts summary, precinct sections, NH checkbox column, MB_Perm Y/N, and precinct bookmarks.")
+
+pdf_cols = st.columns(2, gap="medium")
+with pdf_cols[0]:
+    if st.button("Prepare Street List PDF", use_container_width=True):
+        with st.spinner("Building Street List PDF from filtered detail shards..."):
+            pdf_bytes = generate_street_list_pdf_bytes(active)
+            st.session_state["street_pdf_bytes"] = pdf_bytes
+
+with pdf_cols[1]:
+    if "street_pdf_bytes" in st.session_state and st.session_state["street_pdf_bytes"]:
+        st.download_button(
+            "Download Street List PDF",
+            data=st.session_state["street_pdf_bytes"],
+            file_name="candidate_connect_street_list.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
 st.markdown('</div>', unsafe_allow_html=True)
