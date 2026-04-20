@@ -543,6 +543,22 @@ def clean_phone_value(val):
         digits = digits[1:]
     return digits
 
+
+def normalize_address_value(value: str) -> str:
+    s = collapse_spaces(value)
+    if not s:
+        return ""
+    s = re.sub(r"\bApartment\b", "Apt", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bSuite\b", "Ste", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bUnit\b", "Unit", s, flags=re.IGNORECASE)
+    words = s.split(" ")
+    words = [proper_case_word(w) for w in words]
+    if words:
+        last = re.sub(r"[^A-Za-z]", "", words[-1]).upper()
+        if last in USPS_SUFFIX_MAP:
+            words[-1] = USPS_SUFFIX_MAP[last].title()
+    return " ".join(words)
+
 def safe_group_series(group: pd.DataFrame, column_name: str) -> pd.Series:
     if column_name not in group.columns:
         return pd.Series([""] * len(group), index=group.index, dtype="object")
