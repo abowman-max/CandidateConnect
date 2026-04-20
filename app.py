@@ -1153,6 +1153,22 @@ def build_precinct_summary(street_df: pd.DataFrame) -> pd.DataFrame:
     return grp
 
 
+
+def get_mb_perm_display(row) -> str:
+    try:
+        for key in ["MB_Perm", "MB_PERM", "MB_Perm_Display", "_MBPerm"]:
+            if key in row:
+                val = str(row.get(key, "")).strip().upper()
+                if val in {"TRUE", "T", "YES", "Y", "1"}:
+                    return "Y"
+                if val in {"FALSE", "F", "NO", "N", "0"}:
+                    return "N"
+                if val in {"Y", "N"}:
+                    return val
+    except Exception:
+        return ""
+    return ""
+
 def make_precinct_bookmark_key(precinct: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9]+", "_", str(precinct)).strip("_")
     return f"precinct_{safe}" if safe else "precinct_unknown"
