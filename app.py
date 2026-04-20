@@ -28,6 +28,7 @@ LOCAL_MANIFEST = LOCAL_ROOT / "dataset_manifest.json"
 
 CC_LOGO = Path("candidate_connect_logo.png")
 TSS_LOGO = Path("TSS_Logo_Transparent.png")
+SAVED_UNIVERSES_PATH = Path("saved_universes.json")
 
 PARTY_COLOR_MAP = {"R": "#c62828", "D": "#1565c0", "O": "#2e7d32"}
 AGE_COLOR_RANGE = ["#7a1523","#9f2032","#b8454f","#c96a6c","#d88f87","#e8b8aa","#f2dbcf","#f7ebe5","#fbf5f2"]
@@ -120,6 +121,47 @@ def first_existing(columns, candidates):
 
 def ensure_parent(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
+
+def load_saved_universes() -> dict:
+    if not SAVED_UNIVERSES_PATH.exists():
+        return {}
+    try:
+        data = json.loads(SAVED_UNIVERSES_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_saved_universes(data: dict):
+    SAVED_UNIVERSES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def summarize_universe_filters(filters: dict) -> str:
+    if not filters:
+        return "No filters"
+    parts = []
+    for key, value in filters.items():
+        if key == "vote_history_index_range":
+            continue
+        if value in (None, "", [], {}, ()):
+            continue
+        if isinstance(value, (list, tuple)):
+            label = ", ".join(str(v) for v in value[:3])
+            if len(value) > 3:
+                label += " ..."
+            parts.append(f"{key}: {label}")
+        else:
+            parts.append(f"{key}: {value}")
+    return " | ".join(parts[:4]) if parts else "No filters"
+
+
+def universe_record_count(filters: dict, columns: list[str]) -> int:
+    if not columns:
+        return 0
+    con = get_conn()
+    where_sql, params = current_filter_clause(filters, columns)
+    row = con.execute(f"SELECT count(*) FROM voters {where_sql}", params).fetchone()
+    return int(row[0]) if row else 0
 
 def r2_public_url(key: str) -> str:
     return f"{R2_BASE}/{key}"
@@ -913,10 +955,6 @@ def build_mail_export(active_filters, householded=False):
         "State": df["StateOut"].apply(normalize_export_text),
         "Zip": df["ZipOut"].apply(clean_zip_value),
     })
-    if "Party" in df.columns:
-        export_df["Party"] = df["Party"]
-    if "Age" in df.columns:
-        export_df["Age"] = df["Age"]
 
     if householded:
         key_name = "_HouseholdKey" if "_HouseholdKey" in df.columns else None
@@ -929,10 +967,6 @@ def build_mail_export(active_filters, householded=False):
             "State": export_df["State"].apply(normalize_export_text),
             "Zip": export_df["Zip"].apply(clean_zip_value),
         })
-        if "Party" in export_df.columns:
-            temp["Party"] = export_df["Party"]
-        if "Age" in export_df.columns:
-            temp["Age"] = export_df["Age"]
 
         address_text = temp["Address1"].apply(normalize_export_text)
         zip_text = temp["Zip"].apply(clean_zip_value)
@@ -959,20 +993,16 @@ def build_mail_export(active_filters, householded=False):
                 "State": normalize_export_text(first_row["State"]),
                 "Zip": clean_zip_value(first_row["Zip"]),
             }
-            if "Party" in temp.columns:
-                row["Party"] = first_row.get("Party", "")
-            if "Age" in temp.columns:
-                row["Age"] = first_row.get("Age", "")
             grouped_rows.append(row)
 
         out = pd.DataFrame(grouped_rows)
-        cols = ["Name", "Address1", "City", "State", "Zip"] + [c for c in ["Party", "Age"] if c in out.columns]
+        cols = ["Name", "Address1", "City", "State", "Zip"]
         out = out[cols]
         out = out.reset_index(drop=True)
         return normalize_mail_dataframe(out)
 
     out = export_df.rename(columns={"MailName": "Name"})
-    cols = ["Name", "Address1", "City", "State", "Zip"] + [c for c in ["Party", "Age"] if c in out.columns]
+    cols = ["Name", "Address1", "City", "State", "Zip"]
     out = out[cols]
     out = out.reset_index(drop=True)
     return normalize_mail_dataframe(out)
@@ -1826,6 +1856,8 @@ if "columns" not in st.session_state:
     st.session_state.columns = []
 if "options" not in st.session_state:
     st.session_state.options = {}
+if "saved_universes" not in st.session_state:
+    st.session_state.saved_universes = load_saved_universes()
 
 with st.sidebar:
     st.header("Filters")
@@ -2038,250 +2070,206 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 divider()
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
-st.caption("Export files are only built when you click the button for that export type.")
+st.markdown('<div class="small-header">Output Center</div>', unsafe_allow_html=True)
+st.caption("Use tabs below to keep exports, reports, and saved universes organized.")
 
-mail_mode = st.radio(
-    "Mailing Mode",
-    ["Not Householded", "Householded"],
-    horizontal=True,
-    key="mail_mode_radio",
-)
+output_tabs = st.tabs(["Exports", "Reports", "Saved Universes"])
 
+with output_tabs[0]:
+    st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
+    st.caption("CSV files are only built when you click the button for that export type.")
 
-def wrap_label_lines(name: str, address1: str, city: str, state: str, zip_code: str):
-    city_state_zip = " ".join([part for part in [normalize_export_text(city), normalize_export_text(state), clean_zip_value(zip_code)] if part])
-    lines = [normalize_export_text(name), normalize_export_text(address1), city_state_zip]
-    return [line for line in lines if line]
+    mail_mode = st.radio(
+        "Mailing Mode",
+        ["Not Householded", "Householded"],
+        horizontal=True,
+        key="mail_mode_radio",
+    )
 
+    exp_cols = st.columns(3, gap="medium")
 
-def generate_mailing_labels_pdf_bytes(active_filters, householded=False):
-    labels_df = build_mail_export(active_filters, householded=householded).copy()
-    if labels_df.empty:
-        return b""
-
-    labels_df = labels_df.fillna("")
-    buffer = BytesIO()
-    page_size = letter
-    c = canvas.Canvas(buffer, pagesize=page_size)
-    width, height = page_size
-
-    # Avery 5160 style layout: 3 columns x 10 rows
-    labels_per_page = 30
-    cols_per_page = 3
-    rows_per_page = 10
-    left_margin = 0.19 * 72
-    top_margin = 0.50 * 72
-    col_width = 2.625 * 72
-    row_height = 1.00 * 72
-    col_gap = 0.125 * 72
-
-    printable_top = height - top_margin
-    x_positions = [left_margin + i * (col_width + col_gap) for i in range(cols_per_page)]
-
-    total_pages = max(1, math.ceil(len(labels_df) / labels_per_page))
-    printed_date = datetime.now().strftime("%m/%d/%Y")
-
-    for page_idx in range(total_pages):
-        if page_idx > 0:
-            c.showPage()
-
-        start = page_idx * labels_per_page
-        end = min(start + labels_per_page, len(labels_df))
-        page_df = labels_df.iloc[start:end].reset_index(drop=True)
-
-        for i, (_, row) in enumerate(page_df.iterrows()):
-            row_idx = i // cols_per_page
-            col_idx = i % cols_per_page
-            x = x_positions[col_idx]
-            y_top = printable_top - row_idx * row_height
-
-            # text inset inside each label
-            text_x = x + 9
-            text_y = y_top - 15
-
-            lines = wrap_label_lines(
-                row.get("Name", ""),
-                row.get("Address1", ""),
-                row.get("City", ""),
-                row.get("State", ""),
-                row.get("Zip", ""),
+    with exp_cols[0]:
+        if st.button("Prepare Filtered CSV", use_container_width=True):
+            with st.spinner("Building filtered CSV from detail shards..."):
+                export_df = build_filtered_csv_export(active)
+                st.session_state["filtered_export_df"] = export_df
+        if "filtered_export_df" in st.session_state:
+            st.download_button(
+                "Download Filtered CSV",
+                data=dataframe_to_csv_bytes(st.session_state["filtered_export_df"]),
+                file_name="candidate_connect_filtered.csv",
+                mime="text/csv",
+                use_container_width=True,
             )
 
-            c.setFillColor(colors.black)
-            c.setFont("Helvetica-Bold", 10)
-            if lines:
-                c.drawString(text_x, text_y, truncate_text(lines[0], 34))
-            c.setFont("Helvetica", 10)
-            if len(lines) > 1:
-                c.drawString(text_x, text_y - 13, truncate_text(lines[1], 34))
-            if len(lines) > 2:
-                c.drawString(text_x, text_y - 26, truncate_text(lines[2], 34))
+    with exp_cols[1]:
+        if st.button("Prepare Texting CSV", use_container_width=True):
+            with st.spinner("Building texting CSV from detail shards..."):
+                export_df = build_texting_export(active)
+                st.session_state["texting_export_df"] = export_df
+        if "texting_export_df" in st.session_state:
+            st.download_button(
+                "Download Texting CSV",
+                data=dataframe_to_csv_bytes(st.session_state["texting_export_df"]),
+                file_name="candidate_connect_texting.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
-        c.setStrokeColor(REPORT_GRID)
-        c.line(24, 22, width - 24, 22)
-        c.setFillColor(colors.black)
-        c.setFont("Helvetica-Bold", 8)
-        mode = "Householded" if householded else "Individual"
-        c.drawString(28, 11, f"Mailing Labels ({mode})")
-        c.drawCentredString(width / 2, 11, f"{page_idx + 1} of {total_pages}")
-        c.drawRightString(width - 28, 11, f"Updated: {printed_date}")
+    with exp_cols[2]:
+        if st.button("Prepare Mail CSV", use_container_width=True):
+            with st.spinner("Building mail CSV from detail shards..."):
+                export_df = build_mail_export(active, householded=(mail_mode == "Householded"))
+                st.session_state["mail_export_df"] = export_df
+                st.session_state["mail_export_mode"] = mail_mode
+        if "mail_export_df" in st.session_state:
+            suffix = "householded" if st.session_state.get("mail_export_mode") == "Householded" else "individual"
+            st.download_button(
+                "Download Mail CSV",
+                data=dataframe_to_csv_bytes(st.session_state["mail_export_df"]),
+                file_name=f"candidate_connect_mail_{suffix}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
-    c.save()
-    pdf = buffer.getvalue()
-    buffer.close()
-    return pdf
+with output_tabs[1]:
+    st.markdown('<div class="small-header">Reports</div>', unsafe_allow_html=True)
+    st.caption("Prepare PDFs only when needed to keep the app responsive.")
 
+    report_sections = st.tabs(["Summary", "Street List", "Walk Sheet", "Mailing Labels"])
 
-exp_cols = st.columns(3, gap="medium")
+    with report_sections[0]:
+        st.caption("Builds a clean PDF summary of the current filtered universe with overview counts, selected filters, and party/gender/age breakdowns.")
+        summary_cols = st.columns(2, gap="medium")
+        with summary_cols[0]:
+            if st.button("Prepare Summary Report PDF", use_container_width=True):
+                with st.spinner("Building Summary Report PDF from current filtered universe..."):
+                    pdf_bytes = generate_summary_report_pdf_bytes(active, cols)
+                    st.session_state["summary_report_pdf_bytes"] = pdf_bytes
+        with summary_cols[1]:
+            if "summary_report_pdf_bytes" in st.session_state and st.session_state["summary_report_pdf_bytes"]:
+                st.download_button(
+                    "Download Summary Report PDF",
+                    data=st.session_state["summary_report_pdf_bytes"],
+                    file_name="candidate_connect_summary_report.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
 
-with exp_cols[0]:
-    if st.button("Prepare Filtered CSV", use_container_width=True):
-        with st.spinner("Building filtered CSV from detail shards..."):
-            export_df = build_filtered_csv_export(active)
-            st.session_state["filtered_export_df"] = export_df
-    if "filtered_export_df" in st.session_state:
-        st.download_button(
-            "Download Filtered CSV",
-            data=dataframe_to_csv_bytes(st.session_state["filtered_export_df"]),
-            file_name="candidate_connect_filtered.csv",
-            mime="text/csv",
-            use_container_width=True,
+    with report_sections[1]:
+        st.caption("Builds a compact precinct-grouped PDF with cover page, counts summary, precinct sections, NH checkbox column, MB_Perm Y/N, and precinct bookmarks.")
+        pdf_cols = st.columns(2, gap="medium")
+        with pdf_cols[0]:
+            if st.button("Prepare Street List PDF", use_container_width=True):
+                with st.spinner("Building Street List PDF from filtered detail shards..."):
+                    pdf_bytes = generate_street_list_pdf_bytes(active)
+                    st.session_state["street_pdf_bytes"] = pdf_bytes
+        with pdf_cols[1]:
+            if "street_pdf_bytes" in st.session_state and st.session_state["street_pdf_bytes"]:
+                st.download_button(
+                    "Download Street List PDF",
+                    data=st.session_state["street_pdf_bytes"],
+                    file_name="candidate_connect_street_list.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+
+    with report_sections[2]:
+        st.caption("Builds a volunteer-friendly walk sheet with aligned C / N / F checkboxes and notes lines.")
+        walk_cols = st.columns(2, gap="medium")
+        with walk_cols[0]:
+            if st.button("Prepare Walk Sheet PDF", use_container_width=True):
+                with st.spinner("Building Walk Sheet PDF from filtered detail shards..."):
+                    pdf_bytes = generate_walk_sheet_pdf_bytes(active)
+                    st.session_state["walk_sheet_pdf_bytes"] = pdf_bytes
+        with walk_cols[1]:
+            if "walk_sheet_pdf_bytes" in st.session_state and st.session_state["walk_sheet_pdf_bytes"]:
+                st.download_button(
+                    "Download Walk Sheet PDF",
+                    data=st.session_state["walk_sheet_pdf_bytes"],
+                    file_name="candidate_connect_walk_sheet.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+
+    with report_sections[3]:
+        st.caption("Builds a print-ready Avery 5160-style PDF label sheet from the current mail export universe.")
+        label_mode = st.radio(
+            "Label Mode",
+            ["Householded", "Individual"],
+            horizontal=True,
+            key="mail_labels_mode",
+        )
+        label_cols = st.columns(2, gap="medium")
+        with label_cols[0]:
+            if st.button("Prepare Mailing Labels PDF", use_container_width=True):
+                with st.spinner("Building mailing labels PDF from filtered detail shards..."):
+                    pdf_bytes = generate_mailing_labels_pdf_bytes(active, householded=(label_mode == "Householded"))
+                    st.session_state["mailing_labels_pdf_bytes"] = pdf_bytes
+                    st.session_state["mailing_labels_pdf_mode"] = label_mode
+        with label_cols[1]:
+            if "mailing_labels_pdf_bytes" in st.session_state and st.session_state["mailing_labels_pdf_bytes"]:
+                suffix = "householded" if st.session_state.get("mailing_labels_pdf_mode") == "Householded" else "individual"
+                st.download_button(
+                    "Download Mailing Labels PDF",
+                    data=st.session_state["mailing_labels_pdf_bytes"],
+                    file_name=f"candidate_connect_mailing_labels_{suffix}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+
+with output_tabs[2]:
+    st.markdown('<div class="small-header">Saved Universes</div>', unsafe_allow_html=True)
+    st.caption("Save your current filter setup so you can load it again without rebuilding it manually.")
+
+    save_name = st.text_input("Universe Name", key="save_universe_name", placeholder="Example: GOTV Democrats Week 1")
+    save_cols = st.columns([1, 1, 1], gap="medium")
+
+    with save_cols[0]:
+        if st.button("Save Current Universe", use_container_width=True):
+            universe_name = save_name.strip()
+            if universe_name:
+                saved = load_saved_universes()
+                saved[universe_name] = {
+                    "filters": active,
+                    "saved_at": datetime.now().strftime("%Y-%m-%d %I:%M %p"),
+                    "count": universe_record_count(active, columns),
+                    "summary": summarize_universe_filters(active),
+                }
+                save_saved_universes(saved)
+                st.session_state["saved_universes"] = saved
+                st.success(f"Saved universe: {universe_name}")
+            else:
+                st.warning("Enter a universe name first.")
+
+    saved_universes = st.session_state.get("saved_universes", {})
+    universe_names = list(saved_universes.keys())
+
+    if universe_names:
+        selected_universe = st.selectbox("Saved Universes", universe_names, key="selected_universe_name")
+        universe_info = saved_universes[selected_universe]
+        st.markdown(
+            f"**Saved:** {universe_info.get('saved_at', '')}  \
+**Count:** {int(universe_info.get('count', 0)):,}  \
+**Filters:** {universe_info.get('summary', 'No filters')}"
         )
 
-with exp_cols[1]:
-    if st.button("Prepare Texting CSV", use_container_width=True):
-        with st.spinner("Building texting CSV from detail shards..."):
-            export_df = build_texting_export(active)
-            st.session_state["texting_export_df"] = export_df
-    if "texting_export_df" in st.session_state:
-        st.download_button(
-            "Download Texting CSV",
-            data=dataframe_to_csv_bytes(st.session_state["texting_export_df"]),
-            file_name="candidate_connect_texting.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
+        action_cols = st.columns(2, gap="medium")
+        with action_cols[0]:
+            if st.button("Load Selected Universe", use_container_width=True):
+                st.session_state.active_filters = universe_info.get("filters", {})
+                st.session_state.filters_applied = True
+                st.success(f"Loaded universe: {selected_universe}")
+                st.rerun()
+        with action_cols[1]:
+            if st.button("Delete Selected Universe", use_container_width=True):
+                saved = load_saved_universes()
+                saved.pop(selected_universe, None)
+                save_saved_universes(saved)
+                st.session_state["saved_universes"] = saved
+                st.success(f"Deleted universe: {selected_universe}")
+                st.rerun()
+    else:
+        st.caption("No saved universes yet.")
 
-with exp_cols[2]:
-    if st.button("Prepare Mail CSV", use_container_width=True):
-        with st.spinner("Building mail CSV from detail shards..."):
-            export_df = build_mail_export(active, householded=(mail_mode == "Householded"))
-            st.session_state["mail_export_df"] = export_df
-            st.session_state["mail_export_mode"] = mail_mode
-    if "mail_export_df" in st.session_state:
-        suffix = "householded" if st.session_state.get("mail_export_mode") == "Householded" else "individual"
-        st.download_button(
-            "Download Mail CSV",
-            data=dataframe_to_csv_bytes(st.session_state["mail_export_df"]),
-            file_name=f"candidate_connect_mail_{suffix}.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-
-st.markdown('</div>', unsafe_allow_html=True)
-
-
-divider()
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.markdown('<div class="small-header">Summary Report PDF</div>', unsafe_allow_html=True)
-st.caption("Builds a clean PDF summary of the current filtered universe with overview counts, selected filters, and party/gender/age breakdowns.")
-
-summary_cols = st.columns(2, gap="medium")
-with summary_cols[0]:
-    if st.button("Prepare Summary Report PDF", use_container_width=True):
-        with st.spinner("Building Summary Report PDF from current filtered universe..."):
-            pdf_bytes = generate_summary_report_pdf_bytes(active, cols)
-            st.session_state["summary_report_pdf_bytes"] = pdf_bytes
-
-with summary_cols[1]:
-    if "summary_report_pdf_bytes" in st.session_state and st.session_state["summary_report_pdf_bytes"]:
-        st.download_button(
-            "Download Summary Report PDF",
-            data=st.session_state["summary_report_pdf_bytes"],
-            file_name="candidate_connect_summary_report.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
-st.markdown('</div>', unsafe_allow_html=True)
-
-
-divider()
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.markdown('<div class="small-header">Street List PDF</div>', unsafe_allow_html=True)
-st.caption("Builds a compact precinct-grouped PDF with cover page, counts summary, precinct sections, NH checkbox column, MB_Perm Y/N, and precinct bookmarks.")
-
-pdf_cols = st.columns(2, gap="medium")
-with pdf_cols[0]:
-    if st.button("Prepare Street List PDF", use_container_width=True):
-        with st.spinner("Building Street List PDF from filtered detail shards..."):
-            pdf_bytes = generate_street_list_pdf_bytes(active)
-            st.session_state["street_pdf_bytes"] = pdf_bytes
-
-with pdf_cols[1]:
-    if "street_pdf_bytes" in st.session_state and st.session_state["street_pdf_bytes"]:
-        st.download_button(
-            "Download Street List PDF",
-            data=st.session_state["street_pdf_bytes"],
-            file_name="candidate_connect_street_list.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
-st.markdown('</div>', unsafe_allow_html=True)
-
-
-divider()
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.markdown('<div class="small-header">Walk Sheet PDF</div>', unsafe_allow_html=True)
-st.caption("Builds a volunteer-friendly walk sheet with aligned C / N / F checkboxes and notes lines.")
-
-walk_cols = st.columns(2, gap="medium")
-with walk_cols[0]:
-    if st.button("Prepare Walk Sheet PDF", use_container_width=True):
-        with st.spinner("Building Walk Sheet PDF from filtered detail shards..."):
-            pdf_bytes = generate_walk_sheet_pdf_bytes(active)
-            st.session_state["walk_sheet_pdf_bytes"] = pdf_bytes
-
-with walk_cols[1]:
-    if "walk_sheet_pdf_bytes" in st.session_state and st.session_state["walk_sheet_pdf_bytes"]:
-        st.download_button(
-            "Download Walk Sheet PDF",
-            data=st.session_state["walk_sheet_pdf_bytes"],
-            file_name="candidate_connect_walk_sheet.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
-st.markdown('</div>', unsafe_allow_html=True)
-
-
-divider()
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.markdown('<div class="small-header">Mailing Labels PDF</div>', unsafe_allow_html=True)
-st.caption("Builds a print-ready Avery 5160-style PDF label sheet from the current mail export universe.")
-
-label_mode = st.radio(
-    "Label Mode",
-    ["Householded", "Individual"],
-    horizontal=True,
-    key="mail_labels_mode",
-)
-
-label_cols = st.columns(2, gap="medium")
-with label_cols[0]:
-    if st.button("Prepare Mailing Labels PDF", use_container_width=True):
-        with st.spinner("Building mailing labels PDF from filtered detail shards..."):
-            pdf_bytes = generate_mailing_labels_pdf_bytes(active, householded=(label_mode == "Householded"))
-            st.session_state["mailing_labels_pdf_bytes"] = pdf_bytes
-            st.session_state["mailing_labels_pdf_mode"] = label_mode
-
-with label_cols[1]:
-    if "mailing_labels_pdf_bytes" in st.session_state and st.session_state["mailing_labels_pdf_bytes"]:
-        suffix = "householded" if st.session_state.get("mailing_labels_pdf_mode") == "Householded" else "individual"
-        st.download_button(
-            "Download Mailing Labels PDF",
-            data=st.session_state["mailing_labels_pdf_bytes"],
-            file_name=f"candidate_connect_mailing_labels_{suffix}.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
 st.markdown('</div>', unsafe_allow_html=True)
