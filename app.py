@@ -1221,7 +1221,7 @@ def _street_pdf_precinct_pages(street_df: pd.DataFrame):
     pages = 0
     for precinct, grp in street_df.groupby("Precinct", sort=False):
         current_street = None
-        y = body_top
+        y = body_top - 10
         pages += 1
         for (street, address), addr_grp in grp.groupby(["StreetGroup", "AddressLine"], sort=False, dropna=False):
             need = len(addr_grp) + 1  # address row + voter rows
@@ -1229,7 +1229,7 @@ def _street_pdf_precinct_pages(street_df: pd.DataFrame):
                 need += 1
             if y - (need * row_h) < body_bottom:
                 pages += 1
-                y = body_top
+                y = body_top - 10
                 current_street = None
             if current_street != street:
                 y -= row_h
@@ -1398,7 +1398,7 @@ def generate_street_list_pdf_bytes(active_filters):
         bookmark_key = make_precinct_bookmark_key(precinct)
         c.bookmarkPage(bookmark_key)
         c.addOutlineEntry(str(precinct), bookmark_key, level=0, closed=False)
-        y = body_top
+        y = body_top - 10
 
         for (street, address), addr_grp in grp.groupby(["StreetGroup", "AddressLine"], sort=False, dropna=False):
             addr_grp = addr_grp.reset_index(drop=True)
@@ -1412,7 +1412,7 @@ def generate_street_list_pdf_bytes(active_filters):
                 page_num += 1
                 page_in_precinct += 1
                 cols = _draw_precinct_page_header(c, width, height, precinct, page_in_precinct)
-                y = body_top
+                y = body_top - 10
                 current_street = None
 
             if current_street != street:
