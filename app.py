@@ -1003,36 +1003,93 @@ def parse_apartment_sort(value) -> tuple:
         return (1, prefix.upper(), int(num) if num else 0)
     return (1, s.upper(), 0)
 
+
+def expand_party_label(code: str) -> str:
+    mapping = {"R": "Republicans", "D": "Democrats", "O": "Others"}
+    return mapping.get(normalize_export_text(code).upper(), normalize_export_text(code))
+
+def expand_mib_application_label(code: str) -> str:
+    mapping = {"APP": "Applied", "DEC": "Declined", "DNA": "None", "": "None"}
+    return mapping.get(normalize_export_text(code).upper(), normalize_export_text(code).title())
+
+def summarize_vote_history(picks: list[str]) -> str:
+    vals = [normalize_export_text(v) for v in picks if normalize_export_text(v)]
+    nums = []
+    for v in vals:
+        m = re.search(r"(\d+)", v)
+        if m:
+            nums.append(int(m.group(1)))
+    if not nums:
+        return ", ".join(vals)
+    nums = sorted(set(nums))
+    if nums == [4]:
+        return "All of the last 4"
+    if len(nums) == 1:
+        return f"{nums[0]} of the last 4"
+    return f"{nums[0]}-{nums[-1]} of the last 4"
+
+def selected_area_desc(active_filters: dict) -> str:
+    counties = active_filters.get("County", []) or []
+    municipalities = active_filters.get("Municipality", []) or []
+    if len(counties) > 1:
+        return ", ".join(counties)
+    if len(counties) == 1 and municipalities:
+        if len(municipalities) == 1:
+            return municipalities[0]
+        return ", ".join(municipalities[:4]) + (" ..." if len(municipalities) > 4 else "")
+    if len(counties) == 1:
+        return counties[0]
+    if municipalities:
+        if len(municipalities) == 1:
+            return municipalities[0]
+        return ", ".join(municipalities[:4]) + (" ..." if len(municipalities) > 4 else "")
+    return "Selected Area"
+
+
 def build_filter_summary_lines(active_filters: dict) -> list[str]:
     lines = []
-    label_map = {
-        "County": "County",
-        "Municipality": "Municipality",
-        "Precinct": "Precinct",
-        "USC": "USC",
-        "STS": "STS",
-        "STH": "STH",
-        "School District": "School District",
-        "party_pick": "Party",
-        "hh_party_pick": "Household Party",
-        "calc_party_pick": "Calculated Party",
-        "gender_pick": "Gender",
-        "age_range_pick": "Age Range",
-        "vote_history_pick": "Vote History (V4A)",
-        "mib_applied_pick": "Mail Ballot Application",
-        "mib_ballot_pick": "Mail Ballot Vote Status",
-        "mb_perm_pick": "MB Perm",
-    }
-    for key, label in label_map.items():
+
+    municipalities = active_filters.get("Municipality", []) or []
+    if municipalities:
+        if len(municipalities) == 1:
+            lines.append(f"Municipality: Selected precincts in {municipalities[0].title()}")
+        else:
+            muni_text = ", ".join(m.title() for m in municipalities[:4])
+            if len(municipalities) > 4:
+                muni_text += " ..."
+            lines.append(f"Municipality: Selected precincts in {muni_text}")
+
+    parties = active_filters.get("party_pick", []) or []
+    if parties:
+        expanded = ", ".join(expand_party_label(p) for p in parties)
+        lines.append(f"Party: {expanded}")
+
+    vote_hist = active_filters.get("vote_history_pick", []) or []
+    if vote_hist:
+        lines.append(f"Vote History: {summarize_vote_history(vote_hist)}")
+
+    mib_app = active_filters.get("mib_applied_pick", []) or []
+    if mib_app:
+        expanded = ", ".join(expand_mib_application_label(v) for v in mib_app)
+        lines.append(f"Mail in Ballot Application: {expanded}")
+
+    mib_vote = active_filters.get("mib_ballot_pick", []) or []
+    if mib_vote:
+        expanded = ", ".join(normalize_export_text(v).title() for v in mib_vote)
+        lines.append(f"Mail Ballot Vote Status: {expanded}")
+
+    mb_perm = active_filters.get("mb_perm_pick", []) or []
+    if mb_perm:
+        expanded = ", ".join("Y" if normalize_export_text(v).upper() == "Y" else "N" for v in mb_perm)
+        lines.append(f"MB Perm: {expanded}")
+
+    for key, label in [("County","County"),("Precinct","Precinct"),("USC","USC"),("STS","STS"),("STH","STH"),("School District","School District"),
+                       ("hh_party_pick","Household Party"),("calc_party_pick","Calculated Party"),("gender_pick","Gender"),
+                       ("age_range_pick","Age Range")]:
         val = active_filters.get(key)
         if isinstance(val, list) and val:
             lines.append(f"{label}: {', '.join(map(str, val[:8]))}" + (" ..." if len(val) > 8 else ""))
-    if active_filters.get("age_slider") is not None:
-        a0, a1 = active_filters["age_slider"]
-        lines.append(f"Age: {a0} to {a1}")
-    if active_filters.get("mb_score_slider") is not None:
-        s0, s1 = active_filters["mb_score_slider"]
-        lines.append(f"MB Probability Score: {s0:g} to {s1:g}")
+
     if active_filters.get("new_reg_months", 0):
         lines.append(f"Newly Registered: within last {active_filters['new_reg_months']} month(s)")
     for key, label in [("has_email","Email"),("has_landline","Landline"),("has_mobile","Mobile")]:
@@ -1063,7 +1120,7 @@ def build_street_list_dataframe(active_filters):
     out["StreetGroup"] = df[street_col].apply(normalize_address_value) if street_col else ""
     house_vals = df[house_col].apply(normalize_export_text) if house_col else pd.Series([""] * len(df))
     apt_vals = df[apt_col].apply(normalize_export_text) if apt_col else pd.Series([""] * len(df))
-    out["AddressLine"] = house_vals + " " + out["StreetGroup"]
+    out["AddressLine"] = house_vals
     out.loc[apt_vals != "", "AddressLine"] = out.loc[apt_vals != "", "AddressLine"] + " Apt " + apt_vals[apt_vals != ""]
     out["AddressLine"] = out["AddressLine"].apply(collapse_spaces).apply(normalize_address_value)
     out["FullName"] = df.apply(full_name_from_row, axis=1).apply(normalize_name_value)
@@ -1101,11 +1158,11 @@ def make_precinct_bookmark_key(precinct: str) -> str:
     return f"precinct_{safe}" if safe else "precinct_unknown"
 
 
-REPORT_NAVY = colors.HexColor("#163D73")
-REPORT_RED = colors.HexColor("#C62828")
-REPORT_LIGHT = colors.HexColor("#F3F6FB")
-REPORT_GRID = colors.HexColor("#D7DEE8")
-REPORT_STREET = colors.HexColor("#EAF0FA")
+REPORT_NAVY = colors.HexColor("#7A1523")
+REPORT_RED = colors.HexColor("#9F2032")
+REPORT_LIGHT = colors.HexColor("#F9E8EA")
+REPORT_GRID = colors.HexColor("#D7B7BC")
+REPORT_STREET = colors.HexColor("#F2D7DB")
 
 def truncate_text(value, max_len):
     s = normalize_export_text(value)
@@ -1124,21 +1181,22 @@ def draw_footer(c, page_num, total_pages, printed_date):
     c.drawCentredString(width / 2, 16, f"{page_num} of {total_pages}")
     c.drawRightString(width - 36, 16, f"Updated: {printed_date}")
 
+
 def draw_brand(c, y_top):
     width, _ = c._pagesize
     try:
         if CC_LOGO.exists():
-            c.drawImage(ImageReader(str(CC_LOGO)), 34, y_top - 34, width=112, height=34, preserveAspectRatio=True, mask='auto')
+            c.drawImage(ImageReader(str(CC_LOGO)), 30, y_top - 30, width=108, height=30, preserveAspectRatio=True, mask='auto')
     except Exception:
         pass
     try:
         if TSS_LOGO.exists():
-            c.drawImage(ImageReader(str(TSS_LOGO)), width - 122, y_top - 30, width=86, height=26, preserveAspectRatio=True, mask='auto')
+            c.drawImage(ImageReader(str(TSS_LOGO)), width - 118, y_top - 28, width=78, height=24, preserveAspectRatio=True, mask='auto')
     except Exception:
         pass
-    c.setFillColor(colors.black)
+    c.setFillColor(REPORT_NAVY)
     c.setFont("Helvetica-Bold", 8)
-    c.drawRightString(width - 36, y_top - 8, "Powered By")
+    c.drawRightString(width - 40, y_top - 6, "Powered By")
 
 def _street_pdf_precinct_pages(street_df: pd.DataFrame):
     body_top = 498
@@ -1169,41 +1227,66 @@ def estimate_street_pdf_pages(summary_df: pd.DataFrame, street_df: pd.DataFrame)
     summary_pages = max(1, math.ceil(len(summary_df) / rows_per_summary_page)) if len(summary_df) else 1
     return 1 + summary_pages + _street_pdf_precinct_pages(street_df)
 
+
 def _draw_cover_page(c, width, height, county_desc, party_desc, printed_date, totals_ind, totals_hh, filter_lines, page_num, total_pages):
-    draw_brand(c, height - 20)
+    # larger centered cover branding
     c.setFillColor(REPORT_NAVY)
-    c.roundRect(34, height - 208, width - 68, 128, 12, fill=1, stroke=0)
+    c.roundRect(34, height - 230, width - 68, 138, 14, fill=1, stroke=0)
+    try:
+        if CC_LOGO.exists():
+            c.drawImage(ImageReader(str(CC_LOGO)), width/2 - 140, height - 122, width=280, height=78, preserveAspectRatio=True, mask='auto')
+    except Exception:
+        pass
+
     c.setFillColor(colors.white)
-    c.setFont("Helvetica-Bold", 24)
-    c.drawString(54, height - 116, county_desc if county_desc else "Street List")
-    c.setFont("Helvetica", 11)
-    c.drawString(54, height - 136, printed_date)
+    c.setFont("Helvetica-Bold", 23)
+    c.drawCentredString(width / 2, height - 148, county_desc if county_desc else "Street List")
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(54, height - 162, f"{party_desc} in {county_desc}")
+    c.drawCentredString(width / 2, height - 170, f"{party_desc} in {county_desc}")
+    c.setFont("Helvetica", 11)
+    c.drawCentredString(width / 2, height - 190, printed_date)
     c.setFont("Helvetica", 12)
-    c.drawString(54, height - 182, f"Individuals: {totals_ind:,}   Households: {totals_hh:,}")
+    c.drawCentredString(width / 2, height - 208, f"Individuals: {totals_ind:,}   Households: {totals_hh:,}")
 
     c.setFillColor(REPORT_NAVY)
-    c.setFont("Helvetica-Bold", 13)
-    c.drawString(40, height - 240, "Filters Used")
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(52, height - 262, "Selected Area")
     c.setFillColor(colors.black)
-    c.setFont("Helvetica", 10)
-    y = height - 258
-    for line in filter_lines[:18]:
-        c.drawString(50, y, f"• {line}")
-        y -= 14
-        if y < 70:
+    c.setFont("Helvetica", 11)
+    c.drawString(52, height - 280, county_desc)
+
+    c.setFillColor(REPORT_NAVY)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(52, height - 318, "Filters Used")
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica", 11)
+    y = height - 338
+    for line in filter_lines[:14]:
+        c.drawString(62, y, f"• {line}")
+        y -= 16
+        if y < 96:
             break
+
+    try:
+        c.setFillColor(REPORT_NAVY)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawCentredString(width / 2, 64, "Powered By")
+        if TSS_LOGO.exists():
+            c.drawImage(ImageReader(str(TSS_LOGO)), width/2 - 48, 24, width=96, height=30, preserveAspectRatio=True, mask='auto')
+    except Exception:
+        pass
+
     draw_footer(c, page_num, total_pages, printed_date)
 
+
 def _draw_summary_page(c, width, height, chunk, printed_date, page_num, total_pages):
-    draw_brand(c, height - 20)
+    draw_brand(c, height - 18)
     c.setFillColor(REPORT_NAVY)
-    c.setFont("Helvetica-Bold", 18)
-    c.drawString(40, height - 58, "Precinct Counts Summary")
+    c.setFont("Helvetica-Bold", 17)
+    c.drawString(40, height - 72, "Precinct Counts Summary")
 
     table_x = 40
-    table_y_top = height - 82
+    table_y_top = height - 96
     table_w = width - 80
     row_h = 18
     precinct_w = table_w - 180
@@ -1219,36 +1302,40 @@ def _draw_summary_page(c, width, height, chunk, printed_date, page_num, total_pa
     y = table_y_top - row_h
     for i, (_, row) in enumerate(chunk.iterrows()):
         y -= row_h
-        c.setFillColor(REPORT_LIGHT if i % 2 == 0 else colors.white)
+        fill = REPORT_LIGHT if i % 2 == 0 else colors.white
+        if normalize_export_text(row["Precinct"]).upper() == "TOTAL":
+            fill = REPORT_STREET
+        c.setFillColor(fill)
         c.rect(table_x, y, table_w, row_h, fill=1, stroke=0)
         c.setStrokeColor(REPORT_GRID)
         c.rect(table_x, y, table_w, row_h, fill=0, stroke=1)
         c.setFillColor(colors.black)
-        c.setFont("Helvetica", 9)
+        c.setFont("Helvetica-Bold" if normalize_export_text(row["Precinct"]).upper() == "TOTAL" else "Helvetica", 9)
         c.drawString(table_x + 8, y + 5, truncate_text(row["Precinct"], 42))
         c.drawRightString(table_x + precinct_w + 80, y + 5, f"{int(row['Individuals']):,}")
         c.drawRightString(table_x + table_w - 10, y + 5, f"{int(row['Households']):,}")
 
     draw_footer(c, page_num, total_pages, printed_date)
 
+
 def _draw_precinct_page_header(c, width, height, precinct, page_in_precinct):
-    draw_brand(c, height - 20)
+    draw_brand(c, height - 18)
     title = precinct if page_in_precinct == 1 else f"{precinct} (cont)"
     c.setFillColor(REPORT_NAVY)
-    c.setFont("Helvetica-Bold", 18)
-    c.drawString(40, height - 56, title)
+    c.setFont("Helvetica-Bold", 17)
+    c.drawString(40, height - 74, title)
 
     c.setFillColor(REPORT_NAVY)
-    c.roundRect(38, height - 88, width - 76, 22, 6, fill=1, stroke=0)
+    c.roundRect(38, height - 106, width - 76, 22, 6, fill=1, stroke=0)
 
     cols = {
-        "Full Name": 42, "Phone": 252, "Party": 404, "Sex": 438, "Age": 468,
-        "F": 500, "A": 520, "U": 540, "NH": 560, "Yard Sign": 586, "MB_Perm": 650
+        "Full Name": 96, "Phone": 300, "Party": 448, "Sex": 478, "Age": 505,
+        "F": 536, "A": 554, "U": 572, "NH": 590, "Yard Sign": 616, "MB Perm": 686
     }
     c.setFillColor(colors.white)
     c.setFont("Helvetica-Bold", 8)
     for label, x in cols.items():
-        c.drawString(x, height - 75, label)
+        c.drawString(x, height - 93, label)
     return cols
 
 def generate_street_list_pdf_bytes(active_filters):
@@ -1258,12 +1345,15 @@ def generate_street_list_pdf_bytes(active_filters):
 
     street_df = street_df.fillna("")
     summary_df = build_precinct_summary(street_df)
-    county_desc = ", ".join(active_filters.get("County", [])) if active_filters.get("County") else "Selected Area"
-    party_desc = ", ".join(active_filters.get("party_pick", [])) if active_filters.get("party_pick") else "Filtered Voters"
+    county_desc = selected_area_desc(active_filters)
+    parties = active_filters.get("party_pick", []) or []
+    party_desc = ", ".join(expand_party_label(p) for p in parties) if parties else "Filtered Voters"
     printed_date = datetime.now().strftime("%m/%d/%Y")
     filter_lines = build_filter_summary_lines(active_filters)
 
-    total_pages = estimate_street_pdf_pages(summary_df, street_df)
+    summary_total = pd.DataFrame([{"Precinct":"TOTAL","Individuals":int(summary_df["Individuals"].sum()) if len(summary_df) else 0,"Households":int(summary_df["Households"].sum()) if len(summary_df) else 0}])
+    summary_df_with_total = pd.concat([summary_df, summary_total], ignore_index=True)
+    total_pages = estimate_street_pdf_pages(summary_df_with_total, street_df)
 
     buffer = BytesIO()
     page_size = landscape(letter)
@@ -1278,13 +1368,13 @@ def generate_street_list_pdf_bytes(active_filters):
     page_num += 1
 
     rows_per_summary_page = 26
-    if len(summary_df) == 0:
-        _draw_summary_page(c, width, height, summary_df, printed_date, page_num, total_pages)
+    if len(summary_df_with_total) == 0:
+        _draw_summary_page(c, width, height, summary_df_with_total, printed_date, page_num, total_pages)
         c.showPage()
         page_num += 1
     else:
-        for start in range(0, len(summary_df), rows_per_summary_page):
-            chunk = summary_df.iloc[start:start + rows_per_summary_page]
+        for start in range(0, len(summary_df_with_total), rows_per_summary_page):
+            chunk = summary_df_with_total.iloc[start:start + rows_per_summary_page]
             _draw_summary_page(c, width, height, chunk, printed_date, page_num, total_pages)
             c.showPage()
             page_num += 1
