@@ -4,3 +4,4 @@ pandas
 requests
 streamlit
 reportlab
+boto3
