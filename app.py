@@ -12,7 +12,8 @@ import streamlit as st
 
 from io import BytesIO
 from datetime import datetime
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import letter, landscape
+from reportlab.lib import colors
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
@@ -1099,61 +1100,163 @@ def make_precinct_bookmark_key(precinct: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9]+", "_", str(precinct)).strip("_")
     return f"precinct_{safe}" if safe else "precinct_unknown"
 
+
+REPORT_NAVY = colors.HexColor("#163D73")
+REPORT_RED = colors.HexColor("#C62828")
+REPORT_LIGHT = colors.HexColor("#F3F6FB")
+REPORT_GRID = colors.HexColor("#D7DEE8")
+REPORT_STREET = colors.HexColor("#EAF0FA")
+
+def truncate_text(value, max_len):
+    s = normalize_export_text(value)
+    return s if len(s) <= max_len else s[:max_len - 1] + "…"
+
+def make_precinct_bookmark_key(precinct: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", str(precinct)).strip("_")
+    return f"precinct_{safe}" if safe else "precinct_unknown"
+
 def draw_footer(c, page_num, total_pages, printed_date):
-    c.setFont("Helvetica", 8)
-    c.drawCentredString(letter[0] / 2, 18, f"{page_num} of {total_pages}")
-    c.drawRightString(letter[0] - 36, 18, f"Updated: {printed_date}")
+    width, _ = c._pagesize
+    c.setStrokeColor(REPORT_GRID)
+    c.line(32, 28, width - 32, 28)
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 8)
+    c.drawCentredString(width / 2, 16, f"{page_num} of {total_pages}")
+    c.drawRightString(width - 36, 16, f"Updated: {printed_date}")
 
 def draw_brand(c, y_top):
+    width, _ = c._pagesize
     try:
         if CC_LOGO.exists():
-            c.drawImage(ImageReader(str(CC_LOGO)), 36, y_top - 32, width=95, height=28, preserveAspectRatio=True, mask='auto')
+            c.drawImage(ImageReader(str(CC_LOGO)), 34, y_top - 34, width=112, height=34, preserveAspectRatio=True, mask='auto')
     except Exception:
         pass
     try:
         if TSS_LOGO.exists():
-            c.drawImage(ImageReader(str(TSS_LOGO)), letter[0] - 115, y_top - 30, width=80, height=24, preserveAspectRatio=True, mask='auto')
+            c.drawImage(ImageReader(str(TSS_LOGO)), width - 122, y_top - 30, width=86, height=26, preserveAspectRatio=True, mask='auto')
     except Exception:
         pass
-    c.setFont("Helvetica-Bold", 9)
-    c.drawRightString(letter[0] - 36, y_top - 8, "Powered By")
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 8)
+    c.drawRightString(width - 36, y_top - 8, "Powered By")
+
+def _street_pdf_precinct_pages(street_df: pd.DataFrame):
+    body_top = 498
+    body_bottom = 42
+    row_h = 14
+    pages = 0
+    for precinct, grp in street_df.groupby("Precinct", sort=False):
+        current_street = None
+        y = body_top
+        pages += 1
+        for (street, address), addr_grp in grp.groupby(["StreetGroup", "AddressLine"], sort=False, dropna=False):
+            need = len(addr_grp) + 1  # address row + voter rows
+            if current_street != street:
+                need += 1
+            if y - (need * row_h) < body_bottom:
+                pages += 1
+                y = body_top
+                current_street = None
+            if current_street != street:
+                y -= row_h
+                current_street = street
+            y -= row_h  # address
+            y -= row_h * len(addr_grp)
+    return pages
 
 def estimate_street_pdf_pages(summary_df: pd.DataFrame, street_df: pd.DataFrame):
-    pages = 1  # cover
-    rows_per_summary_page = 38
-    pages += max(1, math.ceil(len(summary_df) / rows_per_summary_page)) if len(summary_df) else 1
+    rows_per_summary_page = 26
+    summary_pages = max(1, math.ceil(len(summary_df) / rows_per_summary_page)) if len(summary_df) else 1
+    return 1 + summary_pages + _street_pdf_precinct_pages(street_df)
 
-    usable_top = 710
-    usable_bottom = 45
-    line_h = 12
-    rows_per_page = int((usable_top - usable_bottom) / line_h)
+def _draw_cover_page(c, width, height, county_desc, party_desc, printed_date, totals_ind, totals_hh, filter_lines, page_num, total_pages):
+    draw_brand(c, height - 20)
+    c.setFillColor(REPORT_NAVY)
+    c.roundRect(34, height - 208, width - 68, 128, 12, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 24)
+    c.drawString(54, height - 116, county_desc if county_desc else "Street List")
+    c.setFont("Helvetica", 11)
+    c.drawString(54, height - 136, printed_date)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(54, height - 162, f"{party_desc} in {county_desc}")
+    c.setFont("Helvetica", 12)
+    c.drawString(54, height - 182, f"Individuals: {totals_ind:,}   Households: {totals_hh:,}")
 
-    for precinct, grp in street_df.groupby("Precinct", sort=False):
-        used = 0
-        first_page = True
-        for street, sg in grp.groupby("StreetGroup", sort=False):
-            needed = 1 + len(sg)  # street line + voter rows
-            if first_page:
-                header_need = 2
-            else:
-                header_need = 2
-            if used == 0:
-                used = header_need
-            if used + needed > rows_per_page:
-                pages += 1
-                used = header_need
-                first_page = False
-            elif first_page and pages == 0:
-                pages += 1
-            used += needed
-        pages += 1  # first precinct page or accumulated
-    return pages
+    c.setFillColor(REPORT_NAVY)
+    c.setFont("Helvetica-Bold", 13)
+    c.drawString(40, height - 240, "Filters Used")
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica", 10)
+    y = height - 258
+    for line in filter_lines[:18]:
+        c.drawString(50, y, f"• {line}")
+        y -= 14
+        if y < 70:
+            break
+    draw_footer(c, page_num, total_pages, printed_date)
+
+def _draw_summary_page(c, width, height, chunk, printed_date, page_num, total_pages):
+    draw_brand(c, height - 20)
+    c.setFillColor(REPORT_NAVY)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(40, height - 58, "Precinct Counts Summary")
+
+    table_x = 40
+    table_y_top = height - 82
+    table_w = width - 80
+    row_h = 18
+    precinct_w = table_w - 180
+
+    c.setFillColor(REPORT_NAVY)
+    c.rect(table_x, table_y_top - row_h, table_w, row_h, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(table_x + 8, table_y_top - 12, "Precinct")
+    c.drawRightString(table_x + precinct_w + 80, table_y_top - 12, "Individuals")
+    c.drawRightString(table_x + table_w - 10, table_y_top - 12, "Households")
+
+    y = table_y_top - row_h
+    for i, (_, row) in enumerate(chunk.iterrows()):
+        y -= row_h
+        c.setFillColor(REPORT_LIGHT if i % 2 == 0 else colors.white)
+        c.rect(table_x, y, table_w, row_h, fill=1, stroke=0)
+        c.setStrokeColor(REPORT_GRID)
+        c.rect(table_x, y, table_w, row_h, fill=0, stroke=1)
+        c.setFillColor(colors.black)
+        c.setFont("Helvetica", 9)
+        c.drawString(table_x + 8, y + 5, truncate_text(row["Precinct"], 42))
+        c.drawRightString(table_x + precinct_w + 80, y + 5, f"{int(row['Individuals']):,}")
+        c.drawRightString(table_x + table_w - 10, y + 5, f"{int(row['Households']):,}")
+
+    draw_footer(c, page_num, total_pages, printed_date)
+
+def _draw_precinct_page_header(c, width, height, precinct, page_in_precinct):
+    draw_brand(c, height - 20)
+    title = precinct if page_in_precinct == 1 else f"{precinct} (cont)"
+    c.setFillColor(REPORT_NAVY)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(40, height - 56, title)
+
+    c.setFillColor(REPORT_NAVY)
+    c.roundRect(38, height - 88, width - 76, 22, 6, fill=1, stroke=0)
+
+    cols = {
+        "Full Name": 42, "Phone": 252, "Party": 404, "Sex": 438, "Age": 468,
+        "F": 500, "A": 520, "U": 540, "NH": 560, "Yard Sign": 586, "MB_Perm": 650
+    }
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 8)
+    for label, x in cols.items():
+        c.drawString(x, height - 75, label)
+    return cols
 
 def generate_street_list_pdf_bytes(active_filters):
     street_df = build_street_list_dataframe(active_filters)
     if street_df.empty:
         return b""
 
+    street_df = street_df.fillna("")
     summary_df = build_precinct_summary(street_df)
     county_desc = ", ".join(active_filters.get("County", [])) if active_filters.get("County") else "Selected Area"
     party_desc = ", ".join(active_filters.get("party_pick", [])) if active_filters.get("party_pick") else "Filtered Voters"
@@ -1163,122 +1266,91 @@ def generate_street_list_pdf_bytes(active_filters):
     total_pages = estimate_street_pdf_pages(summary_df, street_df)
 
     buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter
+    page_size = landscape(letter)
+    c = canvas.Canvas(buffer, pagesize=page_size)
+    width, height = page_size
     page_num = 1
 
-    # Cover page
-    draw_brand(c, height - 24)
-    c.setFont("Helvetica-Bold", 24)
-    c.drawString(50, height - 90, county_desc if county_desc else "Street List")
-    c.setFont("Helvetica", 11)
-    c.drawString(50, height - 115, printed_date)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, height - 150, f"{party_desc} in {county_desc}")
-    totals_hh = summary_df["Households"].sum() if len(summary_df) else 0
-    totals_ind = summary_df["Individuals"].sum() if len(summary_df) else 0
-    c.setFont("Helvetica", 12)
-    c.drawString(50, height - 172, f"Individuals: {totals_ind:,} Households: {totals_hh:,}")
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(50, height - 210, "Filters Used")
-    c.setFont("Helvetica", 10)
-    y = height - 228
-    for line in filter_lines:
-        c.drawString(60, y, f"• {line}")
-        y -= 14
-        if y < 60:
-            break
-    draw_footer(c, page_num, total_pages, printed_date)
+    totals_hh = int(summary_df["Households"].sum()) if len(summary_df) else 0
+    totals_ind = int(summary_df["Individuals"].sum()) if len(summary_df) else 0
+    _draw_cover_page(c, width, height, county_desc, party_desc, printed_date, totals_ind, totals_hh, filter_lines, page_num, total_pages)
     c.showPage()
     page_num += 1
 
-    # Summary pages
-    rows_per_summary_page = 38
-    for start in range(0, max(len(summary_df),1), rows_per_summary_page):
-        draw_brand(c, height - 24)
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(50, height - 70, "Precinct Counts Summary")
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(50, height - 95, "Precinct")
-        c.drawRightString(470, height - 95, "Individuals")
-        c.drawRightString(560, height - 95, "Households")
-        y = height - 112
-        chunk = summary_df.iloc[start:start+rows_per_summary_page] if len(summary_df) else pd.DataFrame(columns=summary_df.columns)
-        c.setFont("Helvetica", 10)
-        for _, row in chunk.iterrows():
-            c.drawString(50, y, str(row["Precinct"]))
-            c.drawRightString(470, y, f"{int(row['Individuals']):,}")
-            c.drawRightString(560, y, f"{int(row['Households']):,}")
-            y -= 14
-        draw_footer(c, page_num, total_pages, printed_date)
+    rows_per_summary_page = 26
+    if len(summary_df) == 0:
+        _draw_summary_page(c, width, height, summary_df, printed_date, page_num, total_pages)
         c.showPage()
         page_num += 1
+    else:
+        for start in range(0, len(summary_df), rows_per_summary_page):
+            chunk = summary_df.iloc[start:start + rows_per_summary_page]
+            _draw_summary_page(c, width, height, chunk, printed_date, page_num, total_pages)
+            c.showPage()
+            page_num += 1
 
-    # Precinct sections
-    col_x = {
-        "Full Name": 40, "Phone": 220, "Party": 340, "Sex": 372, "Age": 402,
-        "F": 432, "A": 452, "U": 472, "NH": 492, "Yard Sign": 520, "MB_Perm": 570
-    }
-    rows_per_page = 50
+    body_top = height - 104
+    body_bottom = 40
+    row_h = 14
 
     for precinct, grp in street_df.groupby("Precinct", sort=False):
+        grp = grp.sort_values(["StreetGroup", "HouseNumSort", "AptSort", "FullName"], kind="stable")
         page_in_precinct = 0
-        used_rows = 99999
         current_street = None
-        for idx, row in grp.iterrows():
-            need_new_page = used_rows >= rows_per_page
-            if current_street != row["StreetGroup"] and used_rows + 2 > rows_per_page:
-                need_new_page = True
+        y = body_top + 999  # force new page first
 
-            if need_new_page:
+        for (street, address), addr_grp in grp.groupby(["StreetGroup", "AddressLine"], sort=False, dropna=False):
+            addr_grp = addr_grp.reset_index(drop=True)
+            need = len(addr_grp) + 1
+            if current_street != street:
+                need += 1
+
+            if y - (need * row_h) < body_bottom:
                 if page_in_precinct > 0:
+                    draw_footer(c, page_num, total_pages, printed_date)
                     c.showPage()
                     page_num += 1
-                draw_brand(c, height - 24)
                 page_in_precinct += 1
-                title = precinct if page_in_precinct == 1 else f"{precinct} (cont)"
+                cols = _draw_precinct_page_header(c, width, height, precinct, page_in_precinct)
                 if page_in_precinct == 1:
                     bookmark_key = make_precinct_bookmark_key(precinct)
                     c.bookmarkPage(bookmark_key)
                     c.addOutlineEntry(str(precinct), bookmark_key, level=0, closed=False)
-                c.setFont("Helvetica-Bold", 14)
-                c.drawString(50, height - 68, title)
-                c.setFont("Helvetica-Bold", 8)
-                y_hdr = height - 88
-                for label, x in col_x.items():
-                    c.drawString(x, y_hdr, label)
-                used_rows = 0
+                y = body_top
                 current_street = None
 
-            y_base = height - 106 - used_rows * 12
-            if current_street != row["StreetGroup"]:
+            if current_street != street:
+                c.setFillColor(REPORT_STREET)
+                c.rect(40, y - 10, width - 80, 14, fill=1, stroke=0)
+                c.setFillColor(REPORT_NAVY)
                 c.setFont("Helvetica-Bold", 10)
-                c.drawString(50, y_base, row["StreetGroup"])
-                used_rows += 1
-                y_base = height - 106 - used_rows * 12
-                current_street = row["StreetGroup"]
+                c.drawString(48, y - 1, truncate_text(street, 80))
+                y -= row_h
+                current_street = street
 
-            c.setFont("Helvetica", 9)
-            c.drawString(col_x["Full Name"], y_base, row["AddressLine"])
-            c.drawString(col_x["Phone"], y_base, "")
-            used_rows += 1
-            y_row = height - 106 - used_rows * 12
+            c.setFillColor(colors.black)
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(54, y - 1, truncate_text(address, 45))
+            y -= row_h
 
-            c.drawString(col_x["Full Name"], y_row, str(row["FullName"])[:32])
-            c.drawString(col_x["Phone"], y_row, str(row["Phone"])[:18])
-            c.drawString(col_x["Party"], y_row, str(row["Party"])[:2])
-            c.drawString(col_x["Sex"], y_row, str(row["Sex"])[:1])
-            c.drawString(col_x["Age"], y_row, str(row["Age"])[:3])
+            c.setFont("Helvetica", 8.5)
+            for _, row in addr_grp.iterrows():
+                c.drawString(cols["Full Name"], y - 1, truncate_text(row["FullName"], 34))
+                c.drawString(cols["Phone"], y - 1, truncate_text(row["Phone"], 22))
+                c.drawString(cols["Party"], y - 1, truncate_text(row["Party"], 2))
+                c.drawString(cols["Sex"], y - 1, truncate_text(row["Sex"], 1))
+                c.drawString(cols["Age"], y - 1, truncate_text(row["Age"], 3))
 
-            # checkbox columns empty
-            for label in ["F","A","U","NH","Yard Sign"]:
-                c.rect(col_x[label], y_row-2, 8, 8)
-            c.drawString(col_x["MB_Perm"], y_row, str(row["MB_Perm"])[:1])
+                for label in ["F", "A", "U", "NH", "Yard Sign"]:
+                    c.rect(cols[label], y - 6, 8, 8, fill=0, stroke=1)
 
-            used_rows += 1
-            draw_footer(c, page_num, total_pages, printed_date)
+                c.drawString(cols["MB_Perm"], y - 1, truncate_text(row["MB_Perm"], 1))
+                y -= row_h
 
-        # footer already drawn on page
+        draw_footer(c, page_num, total_pages, printed_date)
+        if page_num < total_pages:
+            c.showPage()
+            page_num += 1
 
     c.save()
     return buffer.getvalue()
