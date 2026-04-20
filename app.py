@@ -164,6 +164,10 @@ def build_view_sql(columns, local_paths):
     landline_col = first_existing(columns, ["Landline"])
     mobile_col = first_existing(columns, ["Mobile"])
     vote_hist_col = first_existing(columns, ["V4A"])
+    mib_applied_col = first_existing(columns, ["MIB_Applied"])
+    mib_ballot_col = first_existing(columns, ["MIB_BALLOT"])
+    mb_score_col = first_existing(columns, ["MMB_AProp_Score"])
+    mb_perm_col = first_existing(columns, ["MB_PERM", "MB_Perm", "MB_Pern"])
     age_col = first_existing(columns, ["Age"])
     house_col = first_existing(columns, ["House Number"])
     street_col = first_existing(columns, ["Street Name"])
@@ -226,6 +230,30 @@ def build_view_sql(columns, local_paths):
         exprs.append(f"upper(trim(coalesce(cast({q(vote_hist_col)} as varchar), ''))) as _VoteHistory")
     else:
         exprs.append("'' as _VoteHistory")
+
+    if mib_applied_col:
+        exprs.append(f"upper(trim(coalesce(cast({q(mib_applied_col)} as varchar), ''))) as _MIBApplied")
+    else:
+        exprs.append("'' as _MIBApplied")
+
+    if mib_ballot_col:
+        exprs.append(f"upper(trim(coalesce(cast({q(mib_ballot_col)} as varchar), ''))) as _MIBBallot")
+    else:
+        exprs.append("'' as _MIBBallot")
+
+    if mb_score_col:
+        exprs.append(f"try_cast({q(mb_score_col)} as double) as _MBScore")
+    else:
+        exprs.append("NULL::DOUBLE as _MBScore")
+
+    if mb_perm_col:
+        exprs.append(f"""case
+            when upper(trim(coalesce(cast({q(mb_perm_col)} as varchar), ''))) in ('TRUE', 'T', 'YES', 'Y', '1') then 'Y'
+            when upper(trim(coalesce(cast({q(mb_perm_col)} as varchar), ''))) in ('FALSE', 'F', 'NO', 'N', '0') then 'N'
+            else ''
+        end as _MBPerm""")
+    else:
+        exprs.append("'' as _MBPerm")
 
     if hh_col:
         exprs.append(f"nullif(trim(coalesce(cast({q(hh_col)} as varchar), '')), '') as _HouseholdKey")
@@ -290,6 +318,24 @@ def current_filter_clause(active, columns):
         picked = active["vote_history_pick"]
         where.append(f"_VoteHistory IN ({sql_literal_list(picked)})")
         params.extend(picked)
+    if active.get("mib_applied_pick"):
+        picked = active["mib_applied_pick"]
+        where.append(f"_MIBApplied IN ({sql_literal_list(picked)})")
+        params.extend(picked)
+    if active.get("mib_ballot_pick"):
+        picked = active["mib_ballot_pick"]
+        where.append(f"_MIBBallot IN ({sql_literal_list(picked)})")
+        params.extend(picked)
+    if active.get("mb_perm_pick"):
+        picked = active["mb_perm_pick"]
+        where.append(f"_MBPerm IN ({sql_literal_list(picked)})")
+        params.extend(picked)
+    if active.get("mb_score_slider") is not None:
+        where.append("_MBScore >= ? AND _MBScore <= ?")
+        params.extend([active["mb_score_slider"][0], active["mb_score_slider"][1]])
+    if active.get("new_reg_months", 0) and active.get("new_reg_months", 0) > 0:
+        where.append("_RegistrationDate >= (CURRENT_DATE - (? * INTERVAL '1 month'))")
+        params.append(int(active["new_reg_months"]))
     if active.get("has_email") == "Has Email":
         where.append("_HasEmail = true")
     elif active.get("has_email") == "No Email":
@@ -329,12 +375,21 @@ def get_basic_options(columns):
     options["hh_party_vals"] = get_distinct_options("HH-Party") if "HH-Party" in columns else []
     options["calc_party_vals"] = get_distinct_options("CalculatedParty") if "CalculatedParty" in columns else []
     options["vote_history_vals"] = get_distinct_options("_VoteHistory", "_VoteHistory") if "V4A" in columns else []
+    options["mib_applied_vals"] = get_distinct_options("_MIBApplied", "_MIBApplied")
+    options["mib_ballot_vals"] = get_distinct_options("_MIBBallot", "_MIBBallot")
+    options["mb_perm_vals"] = get_distinct_options("_MBPerm", "_MBPerm")
+
     con = get_conn()
     age_min, age_max = con.execute(
         "SELECT min(_AgeNum), max(_AgeNum) FROM voters WHERE _Status = 'A' AND _AgeNum IS NOT NULL"
     ).fetchone()
+    score_min, score_max = con.execute(
+        "SELECT min(_MBScore), max(_MBScore) FROM voters WHERE _Status = 'A' AND _MBScore IS NOT NULL"
+    ).fetchone()
     options["age_min"] = int(age_min) if age_min is not None else None
     options["age_max"] = int(age_max) if age_max is not None else None
+    options["mb_score_min"] = float(score_min) if score_min is not None else None
+    options["mb_score_max"] = float(score_max) if score_max is not None else None
     return options
 
 def query_metrics(active, columns):
@@ -479,40 +534,43 @@ def clean_phone_value(val):
         digits = digits[1:]
     return digits
 
+def safe_group_series(group: pd.DataFrame, column_name: str) -> pd.Series:
+    if column_name not in group.columns:
+        return pd.Series([""] * len(group), index=group.index, dtype="object")
+    data = group[column_name]
+    if isinstance(data, pd.DataFrame):
+        data = data.iloc[:, 0]
+    return data.fillna("").astype(str).str.strip()
+
 def build_household_mail_name(group: pd.DataFrame) -> str:
-    names = group["Name"].fillna("").astype(str).str.strip()
-    names = names[names != ""].tolist()
-    if not names:
+    names = safe_group_series(group, "Name")
+    names = [x for x in names.tolist() if x]
+    if len(names) == 0:
         return ""
-
-    last_names = (
-        group.get("LastName", pd.Series([""] * len(group)))
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
-    non_blank_last = [x for x in last_names.tolist() if x]
-    unique_last = sorted(set(non_blank_last), key=lambda x: x.lower())
-
     if len(names) == 1:
         return names[0]
 
+    last_names = safe_group_series(group, "LastName")
+    unique_last = sorted({x for x in last_names.tolist() if x}, key=lambda x: x.lower())
     if len(unique_last) == 1:
         return f"{unique_last[0]} Household"
 
-    first_names = (
-        group.get("FirstName", pd.Series([""] * len(group)))
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
+    first_names = safe_group_series(group, "FirstName")
     display_names = [x for x in first_names.tolist() if x]
     if len(display_names) >= 2:
-        if len(display_names) == 2:
-            return f"{display_names[0]} and {display_names[1]}"
-        if len(display_names) == 3:
-            return f"{display_names[0]}, {display_names[1]} and {display_names[2]}"
-        return f"{display_names[0]}, {display_names[1]} and Family"
+        unique_display = []
+        seen = set()
+        for name in display_names:
+            key = name.lower()
+            if key not in seen:
+                unique_display.append(name)
+                seen.add(key)
+        if len(unique_display) == 2:
+            return f"{unique_display[0]} and {unique_display[1]}"
+        if len(unique_display) == 3:
+            return f"{unique_display[0]}, {unique_display[1]} and {unique_display[2]}"
+        if len(unique_display) > 3:
+            return f"{unique_display[0]}, {unique_display[1]} and Family"
 
     return "Current Resident"
 
@@ -618,6 +676,30 @@ def build_detail_export_sql(detail_paths, active_filters):
         exprs.append(f"upper(trim(coalesce(cast({q(vote_hist_col)} as varchar), ''))) as _VoteHistory")
     else:
         exprs.append("'' as _VoteHistory")
+
+    if mib_applied_col:
+        exprs.append(f"upper(trim(coalesce(cast({q(mib_applied_col)} as varchar), ''))) as _MIBApplied")
+    else:
+        exprs.append("'' as _MIBApplied")
+
+    if mib_ballot_col:
+        exprs.append(f"upper(trim(coalesce(cast({q(mib_ballot_col)} as varchar), ''))) as _MIBBallot")
+    else:
+        exprs.append("'' as _MIBBallot")
+
+    if mb_score_col:
+        exprs.append(f"try_cast({q(mb_score_col)} as double) as _MBScore")
+    else:
+        exprs.append("NULL::DOUBLE as _MBScore")
+
+    if mb_perm_col:
+        exprs.append(f"""case
+            when upper(trim(coalesce(cast({q(mb_perm_col)} as varchar), ''))) in ('TRUE', 'T', 'YES', 'Y', '1') then 'Y'
+            when upper(trim(coalesce(cast({q(mb_perm_col)} as varchar), ''))) in ('FALSE', 'F', 'NO', 'N', '0') then 'N'
+            else ''
+        end as _MBPerm""")
+    else:
+        exprs.append("'' as _MBPerm")
 
     if hh_col:
         exprs.append(f"nullif(trim(coalesce(cast({q(hh_col)} as varchar), '')), '') as _HouseholdKey")
@@ -774,6 +856,22 @@ with st.sidebar:
 
             with st.expander("Vote History", expanded=False):
                 vote_history_pick = st.multiselect("Vote History", opts.get("vote_history_vals", []), default=st.session_state.active_filters.get("vote_history_pick", []))
+                mib_applied_pick = st.multiselect("Mail Ballot Application Status", opts.get("mib_applied_vals", []), default=st.session_state.active_filters.get("mib_applied_pick", []))
+                mib_ballot_pick = st.multiselect("Mail Ballot Vote Status", opts.get("mib_ballot_vals", []), default=st.session_state.active_filters.get("mib_ballot_pick", []))
+                mb_perm_pick = st.multiselect("MB Perm", opts.get("mb_perm_vals", []), default=st.session_state.active_filters.get("mb_perm_pick", []))
+                mb_score_slider = None
+                if opts.get("mb_score_min") is not None and opts.get("mb_score_max") is not None:
+                    lo = float(opts["mb_score_min"])
+                    hi = float(opts["mb_score_max"])
+                    default_score = st.session_state.active_filters.get("mb_score_slider", (lo, hi))
+                    mb_score_slider = st.slider("MB Probability Score", min_value=lo, max_value=hi, value=default_score)
+                new_reg_months = st.slider(
+                    "Newly Registered (within last N months; 0 = all)",
+                    min_value=0,
+                    max_value=24,
+                    value=st.session_state.active_filters.get("new_reg_months", 0),
+                    step=1,
+                )
 
             with st.expander("Contact Filters", expanded=False):
                 email_opts = ["All", "Has Email", "No Email"]
