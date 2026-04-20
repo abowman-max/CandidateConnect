@@ -166,7 +166,7 @@ def build_view_sql(columns, local_paths):
     vote_hist_col = first_existing(columns, ["V4A"])
     mib_applied_col = first_existing(columns, ["MIB_Applied"])
     mib_ballot_col = first_existing(columns, ["MIB_BALLOT"])
-    mb_score_col = first_existing(columns, ["MMB_AProp_Score", "MB_AProp_Score"])
+    mb_score_col = first_existing(columns, ["MB_AProp_Score", "MMB_AProp_Score"])
     mb_perm_col = first_existing(columns, ["MB_PERM", "MB_Perm", "MB_Pern"])
     age_col = first_existing(columns, ["Age"])
     house_col = first_existing(columns, ["House Number"])
@@ -642,7 +642,7 @@ def build_detail_export_sql(detail_paths, active_filters):
     vote_hist_col = first_existing_detail(columns, ["V4A"])
     mib_applied_col = first_existing_detail(columns, ["MIB_Applied"])
     mib_ballot_col = first_existing_detail(columns, ["MIB_BALLOT"])
-    mb_score_col = first_existing_detail(columns, ["MMB_AProp_Score", "MB_AProp_Score"])
+    mb_score_col = first_existing_detail(columns, ["MB_AProp_Score", "MMB_AProp_Score"])
     mb_perm_col = first_existing_detail(columns, ["MB_PERM", "MB_Perm", "MB_Pern"])
 
     exprs = ["*"]
@@ -772,38 +772,73 @@ def build_mail_export(active_filters, householded=False):
     df["StateOut"] = df[state_col].apply(normalize_export_text) if state_col else ""
     df["ZipOut"] = df[zip_col].apply(clean_zip_value) if zip_col else ""
 
-    out = df[["Name", "Address1", "CityOut", "StateOut", "ZipOut"]].copy()
+    export_df = pd.DataFrame({
+        "MailName": df["Name"].apply(normalize_export_text),
+        "Address1": df["Address1"].apply(normalize_export_text),
+        "City": df["CityOut"].apply(normalize_export_text),
+        "State": df["StateOut"].apply(normalize_export_text),
+        "Zip": df["ZipOut"].apply(clean_zip_value),
+    })
     if "Party" in df.columns:
-        out["Party"] = df["Party"]
+        export_df["Party"] = df["Party"]
     if "Age" in df.columns:
-        out["Age"] = df["Age"]
-    out = out.rename(columns={"CityOut": "City", "StateOut": "State", "ZipOut": "Zip"})
+        export_df["Age"] = df["Age"]
 
     if householded:
         key_name = "_HouseholdKey" if "_HouseholdKey" in df.columns else None
-        temp = pd.concat([df.reset_index(drop=True), out.reset_index(drop=True)], axis=1)
+        temp = pd.DataFrame({
+            "_BaseName": df["Name"].apply(normalize_export_text),
+            "FirstName": safe_group_series(df, "FirstName"),
+            "LastName": safe_group_series(df, "LastName"),
+            "Address1": export_df["Address1"].apply(normalize_export_text),
+            "City": export_df["City"].apply(normalize_export_text),
+            "State": export_df["State"].apply(normalize_export_text),
+            "Zip": export_df["Zip"].apply(clean_zip_value),
+        })
+        if "Party" in export_df.columns:
+            temp["Party"] = export_df["Party"]
+        if "Age" in export_df.columns:
+            temp["Age"] = export_df["Age"]
 
-        address_text = safe_group_series(temp, "Address1")
-        zip_text = safe_group_series(temp, "Zip").apply(clean_zip_value)
+        address_text = temp["Address1"].apply(normalize_export_text)
+        zip_text = temp["Zip"].apply(clean_zip_value)
         fallback_key = address_text + "|" + zip_text
 
-        if key_name:
-            base_key = safe_group_series(temp, key_name)
+        if key_name and key_name in df.columns:
+            base_key = safe_group_series(df, key_name)
             grp_key = base_key.where(base_key != "", fallback_key)
         else:
             grp_key = fallback_key
 
         temp["_grp"] = grp_key.fillna("").astype(str)
+        temp["Name"] = temp["_BaseName"]
 
         grouped_rows = []
-        grouped = temp.sort_values(by=["_grp", "Name"]).groupby("_grp", dropna=False, sort=False)
+        grouped = temp.sort_values(by=["_grp", "_BaseName"]).groupby("_grp", dropna=False, sort=False)
         for _, grp in grouped:
             first_row = grp.iloc[0].copy()
-            first_row["Name"] = build_household_mail_name(grp)
-            grouped_rows.append({col: first_row[col] if col in first_row.index else "" for col in out.columns})
+            first_row["MailName"] = build_household_mail_name(grp)
+            row = {
+                "Name": first_row["MailName"],
+                "Address1": normalize_export_text(first_row["Address1"]),
+                "City": normalize_export_text(first_row["City"]),
+                "State": normalize_export_text(first_row["State"]),
+                "Zip": clean_zip_value(first_row["Zip"]),
+            }
+            if "Party" in temp.columns:
+                row["Party"] = first_row.get("Party", "")
+            if "Age" in temp.columns:
+                row["Age"] = first_row.get("Age", "")
+            grouped_rows.append(row)
 
-        out = pd.DataFrame(grouped_rows, columns=out.columns)
+        out = pd.DataFrame(grouped_rows)
+        cols = ["Name", "Address1", "City", "State", "Zip"] + [c for c in ["Party", "Age"] if c in out.columns]
+        out = out[cols]
+        return out.reset_index(drop=True)
 
+    out = export_df.rename(columns={"MailName": "Name"})
+    cols = ["Name", "Address1", "City", "State", "Zip"] + [c for c in ["Party", "Age"] if c in out.columns]
+    out = out[cols]
     return out.reset_index(drop=True)
 
 def dataframe_to_csv_bytes(df):
@@ -887,7 +922,7 @@ with st.sidebar:
                         max(0, min(int(default_vote_idx[1]), max_index)),
                     )
                     vote_idx_range = st.slider(
-                        "Vote History Range",
+                        "Vote History Range (V4A)",
                         min_value=0,
                         max_value=max_index,
                         value=default_vote_idx,
