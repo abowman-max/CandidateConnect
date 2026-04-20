@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import base64
+import re
 
 import altair as alt
 import duckdb
@@ -447,6 +448,74 @@ def normalize_export_text(val):
         return ""
     return s
 
+
+def normalize_numeric_string(val):
+    if pd.isna(val):
+        return ""
+    s = str(val).strip()
+    if s.lower() in {"nan", "none", ""}:
+        return ""
+    if re.fullmatch(r"\d+\.0+", s):
+        s = s.split(".")[0]
+    return s
+
+def clean_zip_value(val):
+    s = normalize_numeric_string(val)
+    if not s:
+        return ""
+    digits = re.sub(r"\D", "", s)
+    if len(digits) == 9:
+        return f"{digits[:5]}-{digits[5:]}"
+    if len(digits) >= 5:
+        return digits[:5]
+    return digits
+
+def clean_phone_value(val):
+    s = normalize_numeric_string(val)
+    if not s:
+        return ""
+    digits = re.sub(r"\D", "", s)
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    return digits
+
+def build_household_mail_name(group: pd.DataFrame) -> str:
+    names = group["Name"].fillna("").astype(str).str.strip()
+    names = names[names != ""].tolist()
+    if not names:
+        return ""
+
+    last_names = (
+        group.get("LastName", pd.Series([""] * len(group)))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    non_blank_last = [x for x in last_names.tolist() if x]
+    unique_last = sorted(set(non_blank_last), key=lambda x: x.lower())
+
+    if len(names) == 1:
+        return names[0]
+
+    if len(unique_last) == 1:
+        return f"{unique_last[0]} Household"
+
+    first_names = (
+        group.get("FirstName", pd.Series([""] * len(group)))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    display_names = [x for x in first_names.tolist() if x]
+    if len(display_names) >= 2:
+        if len(display_names) == 2:
+            return f"{display_names[0]} and {display_names[1]}"
+        if len(display_names) == 3:
+            return f"{display_names[0]}, {display_names[1]} and {display_names[2]}"
+        return f"{display_names[0]}, {display_names[1]} and Family"
+
+    return "Current Resident"
+
 def full_name_from_row(row):
     parts = [
         normalize_export_text(row.get("FirstName", "")),
@@ -565,17 +634,28 @@ def fetch_filtered_detail(active_filters):
     return get_conn().execute(sql, params).df()
 
 def build_filtered_csv_export(active_filters):
-    return fetch_filtered_detail(active_filters)
+    df = fetch_filtered_detail(active_filters).copy()
+    for col in ["Zip", "ZIP", "ZipCode", "ZIPCODE", "MailingZip", "Mailing Zip", "MailZip"]:
+        if col in df.columns:
+            df[col] = df[col].apply(clean_zip_value)
+    for col in ["PrimaryPhone", "Mobile", "Landline"]:
+        if col in df.columns:
+            df[col] = df[col].apply(clean_phone_value)
+    return df
 
 def build_texting_export(active_filters):
     df = fetch_filtered_detail(active_filters).copy()
     if df.empty:
         return pd.DataFrame(columns=["Name", "Mobile", "Party", "Age", "County", "Precinct"])
     df["Name"] = df.apply(full_name_from_row, axis=1)
-    if "Mobile" not in df.columns:
-        df["Mobile"] = ""
-    cols = [c for c in ["Name", "Mobile", "Party", "Age", "County", "Precinct"] if c in df.columns]
+    mobile_col = "Mobile" if "Mobile" in df.columns else None
+    if mobile_col is None:
+        df["MobileClean"] = ""
+    else:
+        df["MobileClean"] = df[mobile_col].apply(clean_phone_value)
+    cols = [c for c in ["Name", "Party", "Age", "County", "Precinct"] if c in df.columns]
     out = df[cols].copy()
+    out.insert(1, "Mobile", df["MobileClean"])
     out = out[out["Mobile"].astype(str).str.strip() != ""]
     return out.reset_index(drop=True)
 
@@ -590,23 +670,32 @@ def build_mail_export(active_filters, householded=False):
     zip_col = first_existing_detail(df.columns.tolist(), ["MailingZip", "Mailing Zip", "ZIP", "Zip", "ZipCode", "ZIPCODE", "MailZip"])
     df["CityOut"] = df[city_col] if city_col else ""
     df["StateOut"] = df[state_col] if state_col else ""
-    df["ZipOut"] = df[zip_col] if zip_col else ""
+    df["ZipOut"] = df[zip_col].apply(clean_zip_value) if zip_col else ""
+
     out = df[["Name", "Address1", "CityOut", "StateOut", "ZipOut"]].copy()
     if "Party" in df.columns:
         out["Party"] = df["Party"]
     if "Age" in df.columns:
         out["Age"] = df["Age"]
     out = out.rename(columns={"CityOut": "City", "StateOut": "State", "ZipOut": "Zip"})
+
     if householded:
         key = "_HouseholdKey" if "_HouseholdKey" in df.columns else None
+        temp = pd.concat([df.reset_index(drop=True), out.reset_index(drop=True)], axis=1)
+        temp["_hh_fallback"] = temp["Address1"].astype(str) + "|" + temp["Zip"].astype(str)
         if key:
-            temp = pd.concat([df[[key]].reset_index(drop=True), out.reset_index(drop=True)], axis=1)
-            temp["_hh_fallback"] = temp["Address1"].astype(str) + "|" + temp["Zip"].astype(str)
             grp_key = temp[key].fillna("").replace("", pd.NA).fillna(temp["_hh_fallback"])
-            temp["_grp"] = grp_key
-            temp = temp.sort_values(by=["_grp", "Name"])
-            temp = temp.drop_duplicates(subset=["_grp"], keep="first")
-            out = temp[out.columns].copy()
+        else:
+            grp_key = temp["_hh_fallback"]
+        temp["_grp"] = grp_key
+
+        grouped_rows = []
+        for _, grp in temp.sort_values(by=["_grp", "Name"]).groupby("_grp", dropna=False):
+            first = grp.iloc[0].copy()
+            first["Name"] = build_household_mail_name(grp)
+            grouped_rows.append(first[out.columns].to_dict())
+        out = pd.DataFrame(grouped_rows, columns=out.columns)
+
     return out.reset_index(drop=True)
 
 def dataframe_to_csv_bytes(df):
