@@ -647,6 +647,10 @@ def build_detail_export_sql(detail_paths, active_filters):
     landline_col = first_existing_detail(columns, ["Landline"])
     mobile_col = first_existing_detail(columns, ["Mobile"])
     vote_hist_col = first_existing_detail(columns, ["V4A"])
+    mib_applied_col = first_existing_detail(columns, ["MIB_Applied"])
+    mib_ballot_col = first_existing_detail(columns, ["MIB_BALLOT"])
+    mb_score_col = first_existing_detail(columns, ["MB_AProp_Score", "MMB_AProp_Score"])
+    mb_perm_col = first_existing_detail(columns, ["MB_PERM", "MB_Perm", "MB_Pern"])
 
     exprs = ["*"]
     if status_col:
