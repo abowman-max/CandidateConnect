@@ -1426,37 +1426,37 @@ def generate_street_list_pdf_bytes(active_filters):
 
             if current_street != street:
                 c.setFillColor(REPORT_STREET)
-                c.rect(40, y - 12, width - 80, 16, fill=1, stroke=0)
+                c.rect(40, y - 9, width - 80, 14, fill=1, stroke=0)
                 c.setFillColor(REPORT_NAVY)
                 c.setFont("Helvetica-Bold", 10)
-                c.drawString(48, y - 1.5, truncate_text(street, 80))
+                c.drawString(48, y + 1, truncate_text(street, 80))
                 y -= row_h
                 current_street = street
 
             c.setFillColor(colors.black)
             c.setFont("Helvetica-Bold", 9)
-            c.drawString(58, y - 1, truncate_text(address, 18))
+            c.drawString(58, y + 1, truncate_text(address, 18))
             y -= row_h
 
             c.setFont("Helvetica", 8.5)
             for row_idx, (_, row) in enumerate(addr_grp.iterrows()):
                 fill = REPORT_LIGHT if row_idx % 2 == 0 else colors.white
                 c.setFillColor(fill)
-                c.rect(52, y - 10, width - 104, 13, fill=1, stroke=0)
+                c.rect(52, y - 8, width - 104, 12, fill=1, stroke=0)
 
                 c.setFillColor(colors.black)
-                c.drawString(cols["Full Name"], y - 1, truncate_text(row["FullName"], 34))
-                c.drawString(cols["Phone"], y - 1, truncate_text(row["Phone"], 22))
-                c.drawString(cols["Party"], y - 1, truncate_text(row["Party"], 2))
-                c.drawString(cols["Sex"], y - 1, truncate_text(row["Sex"], 1))
-                c.drawString(cols["Age"], y - 1, truncate_text(row["Age"], 3))
+                c.drawString(cols["Full Name"], y + 1, truncate_text(row["FullName"], 34))
+                c.drawString(cols["Phone"], y + 1, truncate_text(row["Phone"], 22))
+                c.drawString(cols["Party"], y + 1, truncate_text(row["Party"], 2))
+                c.drawString(cols["Sex"], y + 1, truncate_text(row["Sex"], 1))
+                c.drawString(cols["Age"], y + 1, truncate_text(row["Age"], 3))
 
                 for label in ["F", "A", "U", "NH", "Yard Sign"]:
-                    c.rect(cols[label], y - 6, 8, 8, fill=0, stroke=1)
+                    c.rect(cols[label], y - 4, 8, 8, fill=0, stroke=1)
 
                 mb_val = truncate_text(get_mb_perm_display(row), 1)
                 if mb_val:
-                    c.drawCentredString(cols["MB Perm"] + 4, y - 1, mb_val)
+                    c.drawCentredString(cols["MB Perm"] + 4, y + 1, mb_val)
                 y -= row_h
 
         draw_footer(c, page_num, total_pages, printed_date)
