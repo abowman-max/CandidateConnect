@@ -1094,6 +1094,11 @@ def build_precinct_summary(street_df: pd.DataFrame) -> pd.DataFrame:
     grp = grp.sort_values("Precinct").reset_index(drop=True)
     return grp
 
+
+def make_precinct_bookmark_key(precinct: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", str(precinct)).strip("_")
+    return f"precinct_{safe}" if safe else "precinct_unknown"
+
 def draw_footer(c, page_num, total_pages, printed_date):
     c.setFont("Helvetica", 8)
     c.drawCentredString(letter[0] / 2, 18, f"{page_num} of {total_pages}")
@@ -1232,12 +1237,10 @@ def generate_street_list_pdf_bytes(active_filters):
                 draw_brand(c, height - 24)
                 page_in_precinct += 1
                 title = precinct if page_in_precinct == 1 else f"{precinct} (cont)"
-                c.bookmarkPage(f"precinct_{precinct}") if page_in_precinct == 1 else None
                 if page_in_precinct == 1:
-                    try:
-                        c.addOutlineEntry(str(precinct), f"precinct_{precinct}", level=0, closed=False)
-                    except Exception:
-                        pass
+                    bookmark_key = make_precinct_bookmark_key(precinct)
+                    c.bookmarkPage(bookmark_key)
+                    c.addOutlineEntry(str(precinct), bookmark_key, level=0, closed=False)
                 c.setFont("Helvetica-Bold", 14)
                 c.drawString(50, height - 68, title)
                 c.setFont("Helvetica-Bold", 8)
