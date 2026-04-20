@@ -1420,13 +1420,13 @@ def generate_street_list_pdf_bytes(active_filters):
                 c.rect(40, y - 9, width - 80, 14, fill=1, stroke=0)
                 c.setFillColor(REPORT_NAVY)
                 c.setFont("Helvetica-Bold", 10)
-                c.drawString(48, y - 2, truncate_text(street, 80))
+                c.drawString(48, y - 5, truncate_text(street, 80))
                 y -= row_h
                 current_street = street
 
             c.setFillColor(colors.black)
             c.setFont("Helvetica-Bold", 9)
-            c.drawString(58, y - 2, truncate_text(address, 18))
+            c.drawString(58, y - 5, truncate_text(address, 18))
             y -= row_h
 
             c.setFont("Helvetica", 8.5)
@@ -1436,18 +1436,18 @@ def generate_street_list_pdf_bytes(active_filters):
                 c.rect(52, y - 8, width - 104, 12, fill=1, stroke=0)
 
                 c.setFillColor(colors.black)
-                c.drawString(cols["Full Name"], y - 2, truncate_text(row["FullName"], 34))
-                c.drawString(cols["Phone"], y - 2, truncate_text(row["Phone"], 22))
-                c.drawString(cols["Party"], y - 2, truncate_text(row["Party"], 2))
-                c.drawString(cols["Sex"], y - 2, truncate_text(row["Sex"], 1))
-                c.drawString(cols["Age"], y - 2, truncate_text(row["Age"], 3))
+                c.drawString(cols["Full Name"], y - 5, truncate_text(row["FullName"], 34))
+                c.drawString(cols["Phone"], y - 5, truncate_text(row["Phone"], 22))
+                c.drawString(cols["Party"], y - 5, truncate_text(row["Party"], 2))
+                c.drawString(cols["Sex"], y - 5, truncate_text(row["Sex"], 1))
+                c.drawString(cols["Age"], y - 5, truncate_text(row["Age"], 3))
 
                 for label in ["F", "A", "U", "NH", "Yard Sign"]:
                     c.rect(cols[label], y - 7, 8, 8, fill=0, stroke=1)
 
                 mb_val = truncate_text(get_mb_perm_display(row), 1)
                 if mb_val:
-                    c.drawCentredString(cols["MB Perm"] + 4, y - 2, mb_val)
+                    c.drawCentredString(cols["MB Perm"] + 4, y - 5, mb_val)
                 y -= row_h
 
         draw_footer(c, page_num, total_pages, printed_date)
