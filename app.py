@@ -242,7 +242,7 @@ def build_view_sql(columns, local_paths):
         exprs.append("'' as _MIBBallot")
 
     if mb_score_col:
-        exprs.append(f"try_cast({q(mb_score_col)} as double) as _MBScore")
+        exprs.append(f"try_cast(regexp_replace(cast({q(mb_score_col)} as varchar), '[^0-9\\.-]', '', 'g') as double) as _MBScore")
     else:
         exprs.append("NULL::DOUBLE as _MBScore")
 
@@ -703,7 +703,7 @@ def build_detail_export_sql(detail_paths, active_filters):
         exprs.append("'' as _MIBBallot")
 
     if mb_score_col:
-        exprs.append(f"try_cast({q(mb_score_col)} as double) as _MBScore")
+        exprs.append(f"try_cast(regexp_replace(cast({q(mb_score_col)} as varchar), '[^0-9\\.-]', '', 'g') as double) as _MBScore")
     else:
         exprs.append("NULL::DOUBLE as _MBScore")
 
@@ -760,11 +760,14 @@ def build_mail_export(active_filters, householded=False):
     df = fetch_filtered_detail(active_filters).copy()
     if df.empty:
         return pd.DataFrame(columns=["Name", "Address1", "City", "State", "Zip", "Party", "Age"])
+
     df["Name"] = df.apply(full_name_from_row, axis=1)
     df["Address1"] = df.apply(build_address_line1_row, axis=1)
+
     city_col = first_existing_detail(df.columns.tolist(), ["MailingCity", "Mailing City", "City", "MailCity"])
     state_col = first_existing_detail(df.columns.tolist(), ["MailingState", "Mailing State", "State", "MailState"])
     zip_col = first_existing_detail(df.columns.tolist(), ["MailingZip", "Mailing Zip", "ZIP", "Zip", "ZipCode", "ZIPCODE", "MailZip"])
+
     df["CityOut"] = df[city_col].apply(normalize_export_text) if city_col else ""
     df["StateOut"] = df[state_col].apply(normalize_export_text) if state_col else ""
     df["ZipOut"] = df[zip_col].apply(clean_zip_value) if zip_col else ""
@@ -777,26 +780,28 @@ def build_mail_export(active_filters, householded=False):
     out = out.rename(columns={"CityOut": "City", "StateOut": "State", "ZipOut": "Zip"})
 
     if householded:
-        key = "_HouseholdKey" if "_HouseholdKey" in df.columns else None
+        key_name = "_HouseholdKey" if "_HouseholdKey" in df.columns else None
         temp = pd.concat([df.reset_index(drop=True), out.reset_index(drop=True)], axis=1)
 
-        address_text = temp["Address1"].apply(normalize_export_text)
-        zip_text = temp["Zip"].apply(clean_zip_value)
+        address_text = safe_group_series(temp, "Address1")
+        zip_text = safe_group_series(temp, "Zip").apply(clean_zip_value)
         fallback_key = address_text + "|" + zip_text
 
-        if key:
-            base_key = temp[key].apply(normalize_export_text)
+        if key_name:
+            base_key = safe_group_series(temp, key_name)
             grp_key = base_key.where(base_key != "", fallback_key)
         else:
             grp_key = fallback_key
 
-        temp["_grp"] = grp_key
+        temp["_grp"] = grp_key.fillna("").astype(str)
 
         grouped_rows = []
-        for _, grp in temp.sort_values(by=["_grp", "Name"]).groupby("_grp", dropna=False):
-            first = grp.iloc[0].copy()
-            first["Name"] = build_household_mail_name(grp)
-            grouped_rows.append(first[out.columns].to_dict())
+        grouped = temp.sort_values(by=["_grp", "Name"]).groupby("_grp", dropna=False, sort=False)
+        for _, grp in grouped:
+            first_row = grp.iloc[0].copy()
+            first_row["Name"] = build_household_mail_name(grp)
+            grouped_rows.append({col: first_row[col] if col in first_row.index else "" for col in out.columns})
+
         out = pd.DataFrame(grouped_rows, columns=out.columns)
 
     return out.reset_index(drop=True)
@@ -907,7 +912,7 @@ with st.sidebar:
                     if not isinstance(default_score, (list, tuple)) or len(default_score) != 2:
                         default_score = (lo, hi)
                     mb_score_slider = st.slider(
-                        "MB Probability Score Slider",
+                        "MB Probability Score",
                         min_value=lo,
                         max_value=hi,
                         value=(float(default_score[0]), float(default_score[1])),
