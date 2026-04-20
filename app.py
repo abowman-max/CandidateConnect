@@ -534,6 +534,125 @@ def clean_phone_value(val):
         digits = digits[1:]
     return digits
 
+
+USPS_SUFFIX_MAP = {
+    "STREET": "ST", "ST": "ST",
+    "ROAD": "RD", "RD": "RD",
+    "AVENUE": "AVE", "AVE": "AVE",
+    "DRIVE": "DR", "DR": "DR",
+    "LANE": "LN", "LN": "LN",
+    "COURT": "CT", "CT": "CT",
+    "CIRCLE": "CIR", "CIR": "CIR",
+    "BOULEVARD": "BLVD", "BLVD": "BLVD",
+    "PLACE": "PL", "PL": "PL",
+    "TERRACE": "TER", "TER": "TER",
+    "PARKWAY": "PKWY", "PKWY": "PKWY",
+    "HIGHWAY": "HWY", "HWY": "HWY",
+    "MOUNT": "MT", "MT": "MT",
+}
+STATE_ABBR = {
+    "ALABAMA":"AL","ALASKA":"AK","ARIZONA":"AZ","ARKANSAS":"AR","CALIFORNIA":"CA","COLORADO":"CO",
+    "CONNECTICUT":"CT","DELAWARE":"DE","FLORIDA":"FL","GEORGIA":"GA","HAWAII":"HI","IDAHO":"ID",
+    "ILLINOIS":"IL","INDIANA":"IN","IOWA":"IA","KANSAS":"KS","KENTUCKY":"KY","LOUISIANA":"LA",
+    "MAINE":"ME","MARYLAND":"MD","MASSACHUSETTS":"MA","MICHIGAN":"MI","MINNESOTA":"MN","MISSISSIPPI":"MS",
+    "MISSOURI":"MO","MONTANA":"MT","NEBRASKA":"NE","NEVADA":"NV","NEW HAMPSHIRE":"NH","NEW JERSEY":"NJ",
+    "NEW MEXICO":"NM","NEW YORK":"NY","NORTH CAROLINA":"NC","NORTH DAKOTA":"ND","OHIO":"OH","OKLAHOMA":"OK",
+    "OREGON":"OR","PENNSYLVANIA":"PA","RHODE ISLAND":"RI","SOUTH CAROLINA":"SC","SOUTH DAKOTA":"SD",
+    "TENNESSEE":"TN","TEXAS":"TX","UTAH":"UT","VERMONT":"VT","VIRGINIA":"VA","WASHINGTON":"WA",
+    "WEST VIRGINIA":"WV","WISCONSIN":"WI","WYOMING":"WY","DISTRICT OF COLUMBIA":"DC"
+}
+NAME_SUFFIXES = {"JR","SR","II","III","IV","V"}
+
+def collapse_spaces(value: str) -> str:
+    return re.sub(r"\s+", " ", normalize_export_text(value)).strip()
+
+def proper_case_word(word: str) -> str:
+    if not word:
+        return ""
+    up = word.upper()
+    if up in NAME_SUFFIXES:
+        return up
+    if re.fullmatch(r"[A-Z]\.", up):
+        return up
+    if "'" in word:
+        return "'".join(part.capitalize() if part else "" for part in word.lower().split("'"))
+    if "-" in word:
+        return "-".join(part.capitalize() if part else "" for part in word.lower().split("-"))
+    return word.lower().capitalize()
+
+def normalize_name_value(value: str) -> str:
+    s = collapse_spaces(value)
+    if not s:
+        return ""
+    return " ".join(proper_case_word(part) for part in s.split(" "))
+
+def normalize_city_value(value: str) -> str:
+    s = collapse_spaces(value)
+    if not s:
+        return ""
+    return " ".join(proper_case_word(part) for part in s.split(" "))
+
+def normalize_state_value(value: str) -> str:
+    s = collapse_spaces(value).upper()
+    if not s:
+        return ""
+    if len(s) == 2 and s.isalpha():
+        return s
+    return STATE_ABBR.get(s, s[:2] if len(s) >= 2 else s)
+
+def normalize_address_value(value: str) -> str:
+    s = collapse_spaces(value).upper()
+    if not s:
+        return ""
+    s = re.sub(r"\bAPARTMENT\b", "APT", s)
+    s = re.sub(r"\bUNIT\b", "UNIT", s)
+    s = re.sub(r"\bSUITE\b", "STE", s)
+    parts = s.split(" ")
+    if parts:
+        last = parts[-1]
+        last_clean = re.sub(r"[^A-Z]", "", last)
+        if last_clean in USPS_SUFFIX_MAP:
+            parts[-1] = USPS_SUFFIX_MAP[last_clean]
+    s = " ".join(parts)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def normalize_mail_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "Name" in out.columns:
+        out["Name"] = out["Name"].apply(normalize_name_value)
+    if "Address1" in out.columns:
+        out["Address1"] = out["Address1"].apply(normalize_address_value)
+    if "City" in out.columns:
+        out["City"] = out["City"].apply(normalize_city_value)
+    if "State" in out.columns:
+        out["State"] = out["State"].apply(normalize_state_value)
+    if "Zip" in out.columns:
+        out["Zip"] = out["Zip"].apply(clean_zip_value)
+    return out
+
+def normalize_filtered_export_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for col in ["FirstName", "MiddleName", "LastName", "FullName", "Name", "NameSuffix"]:
+        if col in out.columns:
+            out[col] = out[col].apply(normalize_name_value)
+    for col in ["Street Name", "Address", "Address1", "Mailing Address", "MailAddress"]:
+        if col in out.columns:
+            out[col] = out[col].apply(normalize_address_value)
+    for col in ["City", "MailingCity", "Mailing City", "MailCity"]:
+        if col in out.columns:
+            out[col] = out[col].apply(normalize_city_value)
+    for col in ["State", "MailingState", "Mailing State", "MailState"]:
+        if col in out.columns:
+            out[col] = out[col].apply(normalize_state_value)
+    for col in ["Zip", "ZIP", "ZipCode", "ZIPCODE", "MailingZip", "Mailing Zip", "MailZip"]:
+        if col in out.columns:
+            out[col] = out[col].apply(clean_zip_value)
+    for col in ["PrimaryPhone", "Mobile", "Landline"]:
+        if col in out.columns:
+            out[col] = out[col].apply(clean_phone_value)
+    return out
+
 def safe_group_series(group: pd.DataFrame, column_name: str) -> pd.Series:
     if column_name not in group.columns:
         return pd.Series([""] * len(group), index=group.index, dtype="object")
@@ -730,13 +849,7 @@ def fetch_filtered_detail(active_filters):
 
 def build_filtered_csv_export(active_filters):
     df = fetch_filtered_detail(active_filters).copy()
-    for col in ["Zip", "ZIP", "ZipCode", "ZIPCODE", "MailingZip", "Mailing Zip", "MailZip"]:
-        if col in df.columns:
-            df[col] = df[col].apply(clean_zip_value)
-    for col in ["PrimaryPhone", "Mobile", "Landline"]:
-        if col in df.columns:
-            df[col] = df[col].apply(clean_phone_value)
-    return df
+    return normalize_filtered_export_dataframe(df)
 
 def build_texting_export(active_filters):
     df = fetch_filtered_detail(active_filters).copy()
@@ -832,12 +945,14 @@ def build_mail_export(active_filters, householded=False):
         out = pd.DataFrame(grouped_rows)
         cols = ["Name", "Address1", "City", "State", "Zip"] + [c for c in ["Party", "Age"] if c in out.columns]
         out = out[cols]
-        return out.reset_index(drop=True)
+        out = out.reset_index(drop=True)
+        return normalize_mail_dataframe(out)
 
     out = export_df.rename(columns={"MailName": "Name"})
     cols = ["Name", "Address1", "City", "State", "Zip"] + [c for c in ["Party", "Age"] if c in out.columns]
     out = out[cols]
-    return out.reset_index(drop=True)
+    out = out.reset_index(drop=True)
+    return normalize_mail_dataframe(out)
 
 def dataframe_to_csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
