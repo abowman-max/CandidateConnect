@@ -1295,9 +1295,13 @@ def generate_street_list_pdf_bytes(active_filters):
 
     for precinct, grp in street_df.groupby("Precinct", sort=False):
         grp = grp.sort_values(["StreetGroup", "HouseNumSort", "AptSort", "FullName"], kind="stable")
-        page_in_precinct = 0
+        page_in_precinct = 1
         current_street = None
-        y = body_top + 999  # force new page first
+        cols = _draw_precinct_page_header(c, width, height, precinct, page_in_precinct)
+        bookmark_key = make_precinct_bookmark_key(precinct)
+        c.bookmarkPage(bookmark_key)
+        c.addOutlineEntry(str(precinct), bookmark_key, level=0, closed=False)
+        y = body_top
 
         for (street, address), addr_grp in grp.groupby(["StreetGroup", "AddressLine"], sort=False, dropna=False):
             addr_grp = addr_grp.reset_index(drop=True)
@@ -1306,16 +1310,11 @@ def generate_street_list_pdf_bytes(active_filters):
                 need += 1
 
             if y - (need * row_h) < body_bottom:
-                if page_in_precinct > 0:
-                    draw_footer(c, page_num, total_pages, printed_date)
-                    c.showPage()
-                    page_num += 1
+                draw_footer(c, page_num, total_pages, printed_date)
+                c.showPage()
+                page_num += 1
                 page_in_precinct += 1
                 cols = _draw_precinct_page_header(c, width, height, precinct, page_in_precinct)
-                if page_in_precinct == 1:
-                    bookmark_key = make_precinct_bookmark_key(precinct)
-                    c.bookmarkPage(bookmark_key)
-                    c.addOutlineEntry(str(precinct), bookmark_key, level=0, closed=False)
                 y = body_top
                 current_street = None
 
