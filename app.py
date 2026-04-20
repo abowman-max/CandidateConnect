@@ -16,6 +16,10 @@ from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib import colors
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
+from reportlab.lib.units import inch
 
 st.set_page_config(page_title="Candidate Connect", layout="wide")
 
@@ -968,6 +972,190 @@ def dataframe_to_csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
 
 
+
+def format_filter_value_for_report(value):
+    if isinstance(value, (list, tuple, set)):
+        cleaned = [normalize_export_text(v) for v in value if normalize_export_text(v)]
+        return ", ".join(cleaned) if cleaned else "All"
+    if value is None:
+        return "All"
+    text = normalize_export_text(value)
+    return text if text else "All"
+
+
+def generate_summary_report_pdf_bytes(active_filters, metrics, party_df, gender_df, age_df):
+    buffer = BytesIO()
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(letter),
+        leftMargin=0.45 * inch,
+        rightMargin=0.45 * inch,
+        topMargin=0.45 * inch,
+        bottomMargin=0.45 * inch,
+    )
+
+    styles = getSampleStyleSheet()
+    elements = []
+
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=20,
+        leading=24,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#9F2032"),
+        spaceAfter=10,
+    )
+    section_header_style = ParagraphStyle(
+        "SectionHeader",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=12,
+        leading=14,
+        alignment=TA_LEFT,
+        textColor=colors.white,
+        backColor=colors.HexColor("#7A1523"),
+        leftIndent=6,
+        spaceBefore=8,
+        spaceAfter=6,
+    )
+    normal_style = ParagraphStyle(
+        "NormalCustom",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        leading=11,
+        textColor=colors.black,
+    )
+    footer_style = ParagraphStyle(
+        "FooterCustom",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8,
+        leading=10,
+        textColor=colors.black,
+    )
+
+    generated_at = datetime.now().strftime("%Y-%m-%d %I:%M %p")
+
+    elements.append(Paragraph("Candidate Connect Summary Report", title_style))
+    elements.append(Paragraph(f"Generated: {generated_at}", normal_style))
+    elements.append(Spacer(1, 0.15 * inch))
+
+    elements.append(Paragraph("Overview", section_header_style))
+    overview_rows = [
+        ["Metric", "Value"],
+        ["Total Voters", f"{int(metrics.get('voters') or 0):,}"],
+        ["Total Households", f"{int(metrics.get('households') or 0):,}"],
+        ["Emails", f"{int(metrics.get('emails') or 0):,}"],
+        ["Landlines", f"{int(metrics.get('landlines') or 0):,}"],
+        ["Mobiles", f"{int(metrics.get('mobiles') or 0):,}"],
+        ["Unique Counties", f"{int(metrics.get('unique_counties') or 0):,}"],
+        ["Unique Precincts", f"{int(metrics.get('unique_precincts') or 0):,}"],
+    ]
+    overview_table = Table(overview_rows, colWidths=[2.6 * inch, 2.2 * inch])
+    overview_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#9F2032")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D7B7BC")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.HexColor("#F9E8EA")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(overview_table)
+    elements.append(Spacer(1, 0.18 * inch))
+
+    elements.append(Paragraph("Selected Filters", section_header_style))
+    filter_label_map = [
+        ("County", "County"),
+        ("Municipality", "Municipality"),
+        ("Precinct", "Precinct"),
+        ("USC", "USC"),
+        ("STS", "STS"),
+        ("STH", "STH"),
+        ("School District", "School District"),
+        ("party_pick", "Party"),
+        ("hh_party_pick", "Household Party"),
+        ("calc_party_pick", "Calculated Party"),
+        ("gender_pick", "Gender"),
+        ("age_range_pick", "Age Range"),
+        ("vote_history_pick", "Vote History"),
+        ("mib_applied_pick", "Mail Ballot App"),
+        ("mib_ballot_pick", "Mail Ballot Vote Status"),
+        ("mb_perm_pick", "MB Perm"),
+        ("has_email", "Email"),
+        ("has_landline", "Landline"),
+        ("has_mobile", "Mobile"),
+    ]
+    filter_rows = [["Filter", "Selection"]]
+    for key, label in filter_label_map:
+        filter_rows.append([label, format_filter_value_for_report(active_filters.get(key))])
+
+    age_slider = active_filters.get("age_slider")
+    if age_slider:
+        filter_rows.append(["Age Slider", f"{int(age_slider[0])} to {int(age_slider[1])}"])
+    mb_score_slider = active_filters.get("mb_score_slider")
+    if mb_score_slider:
+        filter_rows.append(["MB Score", f"{float(mb_score_slider[0]):.1f} to {float(mb_score_slider[1]):.1f}"])
+    new_reg_months = int(active_filters.get("new_reg_months") or 0)
+    filter_rows.append(["Newly Registered", f"Within last {new_reg_months} month(s)" if new_reg_months > 0 else "All"])
+
+    filters_table = Table(filter_rows, colWidths=[2.5 * inch, 6.9 * inch])
+    filters_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#9F2032")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D7B7BC")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9E8EA")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    elements.append(filters_table)
+    elements.append(Spacer(1, 0.18 * inch))
+
+    def build_count_table(title, df_counts, label_col):
+        elements.append(Paragraph(title, section_header_style))
+        data = [["Value", "Count"]]
+        if df_counts is None or df_counts.empty:
+            data.append(["No data", "0"])
+        else:
+            for _, row in df_counts.iterrows():
+                label = normalize_export_text(row.get(label_col, "")) or "Blank/Unknown"
+                count = int(pd.to_numeric(row.get("Count", 0), errors="coerce") or 0)
+                data.append([label, f"{count:,}"])
+        table = Table(data, colWidths=[3.2 * inch, 1.4 * inch])
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#9F2032")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D7B7BC")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9E8EA")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 0.14 * inch))
+
+    build_count_table("Party Breakdown", party_df, "Party")
+    build_count_table("Gender Breakdown", gender_df, "Gender")
+    build_count_table("Age Breakdown", age_df, "Age Range")
+
+    elements.append(Spacer(1, 0.1 * inch))
+    elements.append(Paragraph("Candidate Connect — Summary report generated from the current filtered universe.", footer_style))
+
+    doc.build(elements)
+    pdf = buffer.getvalue()
+    buffer.close()
+    return pdf
+
 def normalize_mb_perm_value(val) -> str:
     s = normalize_export_text(val).upper()
     if s in {"TRUE", "T", "YES", "Y", "1"}:
@@ -1754,6 +1942,44 @@ with exp_cols[2]:
             use_container_width=True,
         )
 
+st.markdown('</div>', unsafe_allow_html=True)
+
+
+divider()
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown('<div class="small-header">Reports</div>', unsafe_allow_html=True)
+st.caption("Generate polished PDF reports from the current filtered universe. Summary Report is ready now.")
+
+report_type = st.selectbox(
+    "Select Report Type",
+    ["Summary Report", "Walk Sheet", "Call List", "Mailing Labels"],
+    key="report_type_select",
+)
+
+report_cols = st.columns(2, gap="medium")
+with report_cols[0]:
+    if st.button("Prepare Report", use_container_width=True):
+        if report_type == "Summary Report":
+            with st.spinner("Building Summary Report PDF..."):
+                st.session_state["summary_report_pdf_bytes"] = generate_summary_report_pdf_bytes(
+                    active_filters=active,
+                    metrics=metrics,
+                    party_df=party_df,
+                    gender_df=gender_df,
+                    age_df=age_df,
+                )
+        else:
+            st.info(f"{report_type} is the next report type to build.")
+
+with report_cols[1]:
+    if report_type == "Summary Report" and st.session_state.get("summary_report_pdf_bytes"):
+        st.download_button(
+            "Download Summary Report PDF",
+            data=st.session_state["summary_report_pdf_bytes"],
+            file_name="candidate_connect_summary_report.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
 st.markdown('</div>', unsafe_allow_html=True)
 
 
