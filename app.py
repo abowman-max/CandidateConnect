@@ -1245,50 +1245,41 @@ def estimate_street_pdf_pages(summary_df: pd.DataFrame, street_df: pd.DataFrame)
 
 
 def _draw_cover_page(c, width, height, county_desc, party_desc, printed_date, totals_ind, totals_hh, filter_lines, page_num, total_pages):
-    # larger centered cover branding
     c.setFillColor(REPORT_NAVY)
-    c.roundRect(34, height - 230, width - 68, 138, 14, fill=1, stroke=0)
+    c.roundRect(34, height - 255, width - 68, 110, 14, fill=1, stroke=0)
+
     try:
         if CC_LOGO.exists():
-            c.drawImage(ImageReader(str(CC_LOGO)), width/2 - 140, height - 122, width=280, height=78, preserveAspectRatio=True, mask='auto')
+            c.drawImage(ImageReader(str(CC_LOGO)), width/2 - 150, height - 105, width=300, height=84, preserveAspectRatio=True, mask='auto')
     except Exception:
         pass
 
     c.setFillColor(colors.white)
-    c.setFont("Helvetica-Bold", 23)
-    c.drawCentredString(width / 2, height - 148, county_desc if county_desc else "Street List")
-    c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(width / 2, height - 170, f"{party_desc} in {county_desc}")
+    c.setFont("Helvetica-Bold", 22)
+    c.drawCentredString(width / 2, height - 173, "Voter Contact List")
     c.setFont("Helvetica", 11)
-    c.drawCentredString(width / 2, height - 190, printed_date)
-    c.setFont("Helvetica", 12)
-    c.drawCentredString(width / 2, height - 208, f"Individuals: {totals_ind:,}   Households: {totals_hh:,}")
+    c.drawCentredString(width / 2, height - 195, printed_date)
+    c.setFont("Helvetica-Bold", 12)
+    c.drawCentredString(width / 2, height - 214, f"Individuals: {totals_ind:,}   Households: {totals_hh:,}")
 
     c.setFillColor(REPORT_NAVY)
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(52, height - 262, "Selected Area")
+    c.setFont("Helvetica-Bold", 15)
+    c.drawString(52, height - 305, "Selected Voters")
     c.setFillColor(colors.black)
     c.setFont("Helvetica", 11)
-    c.drawString(52, height - 280, county_desc)
-
-    c.setFillColor(REPORT_NAVY)
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(52, height - 318, "Filters Used")
-    c.setFillColor(colors.black)
-    c.setFont("Helvetica", 11)
-    y = height - 338
+    y = height - 327
     for line in filter_lines[:14]:
         c.drawString(62, y, f"• {line}")
-        y -= 16
-        if y < 96:
+        y -= 17
+        if y < 114:
             break
 
     try:
         c.setFillColor(REPORT_NAVY)
         c.setFont("Helvetica-Bold", 10)
-        c.drawCentredString(width / 2, 64, "Powered By")
+        c.drawCentredString(width / 2, 84, "Powered By")
         if TSS_LOGO.exists():
-            c.drawImage(ImageReader(str(TSS_LOGO)), width/2 - 48, 24, width=96, height=30, preserveAspectRatio=True, mask='auto')
+            c.drawImage(ImageReader(str(TSS_LOGO)), width/2 - 48, 42, width=96, height=30, preserveAspectRatio=True, mask='auto')
     except Exception:
         pass
 
