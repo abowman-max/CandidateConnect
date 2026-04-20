@@ -374,7 +374,7 @@ def get_basic_options(columns):
     options["age_range_vals"] = get_distinct_options("_AgeRange", "_AgeRange")
     options["hh_party_vals"] = get_distinct_options("HH-Party") if "HH-Party" in columns else []
     options["calc_party_vals"] = get_distinct_options("CalculatedParty") if "CalculatedParty" in columns else []
-    options["vote_history_vals"] = get_distinct_options("_VoteHistory", "_VoteHistory") if "V4A" in columns else []
+    options["vote_history_vals"] = ordered_vote_history_values(get_distinct_options("_VoteHistory", "_VoteHistory")) if "V4A" in columns else []
     options["mib_applied_vals"] = get_distinct_options("_MIBApplied", "_MIBApplied")
     options["mib_ballot_vals"] = get_distinct_options("_MIBBallot", "_MIBBallot")
     options["mb_perm_vals"] = get_distinct_options("_MBPerm", "_MBPerm")
@@ -541,6 +541,17 @@ def safe_group_series(group: pd.DataFrame, column_name: str) -> pd.Series:
     if isinstance(data, pd.DataFrame):
         data = data.iloc[:, 0]
     return data.fillna("").astype(str).str.strip()
+
+def vote_history_sort_key(value: str):
+    s = normalize_export_text(value).upper()
+    digits = re.findall(r"\d+", s)
+    if digits:
+        return (0, int(digits[0]), s)
+    return (1, 9999, s)
+
+def ordered_vote_history_values(values):
+    cleaned = [normalize_export_text(v) for v in values if normalize_export_text(v) != ""]
+    return sorted(cleaned, key=vote_history_sort_key)
 
 def build_household_mail_name(group: pd.DataFrame) -> str:
     names = safe_group_series(group, "Name")
@@ -855,16 +866,49 @@ with st.sidebar:
                     age_slider = st.slider("Age", opts["age_min"], opts["age_max"], st.session_state.active_filters.get("age_slider", (opts["age_min"], opts["age_max"])))
 
             with st.expander("Vote History", expanded=False):
-                vote_history_pick = st.multiselect("Vote History", opts.get("vote_history_vals", []), default=st.session_state.active_filters.get("vote_history_pick", []))
+                vote_history_vals = opts.get("vote_history_vals", [])
+                vote_history_pick = []
+                if vote_history_vals:
+                    max_index = len(vote_history_vals) - 1
+                    default_vote_idx = st.session_state.active_filters.get("vote_history_index_range", (0, max_index))
+                    if not isinstance(default_vote_idx, (list, tuple)) or len(default_vote_idx) != 2:
+                        default_vote_idx = (0, max_index)
+                    default_vote_idx = (
+                        max(0, min(int(default_vote_idx[0]), max_index)),
+                        max(0, min(int(default_vote_idx[1]), max_index)),
+                    )
+                    vote_idx_range = st.slider(
+                        "Vote History Range",
+                        min_value=0,
+                        max_value=max_index,
+                        value=default_vote_idx,
+                        format="%d",
+                    )
+                    vote_history_pick = vote_history_vals[vote_idx_range[0]: vote_idx_range[1] + 1]
+                    if vote_history_pick:
+                        st.caption(f"Selected vote history: {vote_history_pick[0]} to {vote_history_pick[-1]}")
+                else:
+                    vote_idx_range = (0, 0)
+                    st.caption("No vote history values found.")
+
                 mib_applied_pick = st.multiselect("Mail Ballot Application Status", opts.get("mib_applied_vals", []), default=st.session_state.active_filters.get("mib_applied_pick", []))
                 mib_ballot_pick = st.multiselect("Mail Ballot Vote Status", opts.get("mib_ballot_vals", []), default=st.session_state.active_filters.get("mib_ballot_pick", []))
                 mb_perm_pick = st.multiselect("MB Perm", opts.get("mb_perm_vals", []), default=st.session_state.active_filters.get("mb_perm_pick", []))
+
                 mb_score_slider = None
                 if opts.get("mb_score_min") is not None and opts.get("mb_score_max") is not None:
                     lo = float(opts["mb_score_min"])
                     hi = float(opts["mb_score_max"])
                     default_score = st.session_state.active_filters.get("mb_score_slider", (lo, hi))
-                    mb_score_slider = st.slider("MB Probability Score", min_value=lo, max_value=hi, value=default_score)
+                    if not isinstance(default_score, (list, tuple)) or len(default_score) != 2:
+                        default_score = (lo, hi)
+                    mb_score_slider = st.slider(
+                        "MB Probability Score",
+                        min_value=lo,
+                        max_value=hi,
+                        value=(float(default_score[0]), float(default_score[1])),
+                    )
+
                 new_reg_months = st.slider(
                     "Newly Registered (within last N months; 0 = all)",
                     min_value=0,
