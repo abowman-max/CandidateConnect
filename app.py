@@ -11,7 +11,7 @@ import streamlit as st
 st.set_page_config(page_title="Candidate Connect", layout="wide")
 
 # R2 public-read setup
-R2_BASE = "https://b1017650e855cac9d9605c7f4e9647a1.r2.cloudflarestorage.com"
+R2_BASE = "https://pub-a9e33b718082407cbd85e7b86b0fcb5c.r2.dev"
 R2_BUCKET = "candidate-connect-data"
 
 LOCAL_ROOT = Path("/tmp/candidate_connect_r2")
@@ -489,7 +489,6 @@ def ensure_detail_shards():
     return local_paths, manifest
 
 def build_detail_export_sql(detail_paths, active_filters):
-    # Query detail shards directly and normalize a few helper fields in SQL.
     paths_sql = "[" + ", ".join(sql_string_literal(p) for p in detail_paths) + "]"
     columns = get_conn().execute(f"DESCRIBE SELECT * FROM read_parquet({paths_sql})").df()["column_name"].tolist()
 
@@ -558,16 +557,15 @@ def build_detail_export_sql(detail_paths, active_filters):
 
     where_sql, params = current_filter_clause(active_filters, columns)
     sql = "SELECT\n    " + ",\n    ".join(exprs) + f"\nFROM read_parquet({paths_sql})\n{where_sql}"
-    return sql, params, columns
+    return sql, params
 
 def fetch_filtered_detail(active_filters):
     detail_paths, _ = ensure_detail_shards()
-    sql, params, _ = build_detail_export_sql(detail_paths, active_filters)
+    sql, params = build_detail_export_sql(detail_paths, active_filters)
     return get_conn().execute(sql, params).df()
 
 def build_filtered_csv_export(active_filters):
-    df = fetch_filtered_detail(active_filters)
-    return df
+    return fetch_filtered_detail(active_filters)
 
 def build_texting_export(active_filters):
     df = fetch_filtered_detail(active_filters).copy()
@@ -590,19 +588,15 @@ def build_mail_export(active_filters, householded=False):
     city_col = first_existing_detail(df.columns.tolist(), ["MailingCity", "Mailing City", "City", "MailCity"])
     state_col = first_existing_detail(df.columns.tolist(), ["MailingState", "Mailing State", "State", "MailState"])
     zip_col = first_existing_detail(df.columns.tolist(), ["MailingZip", "Mailing Zip", "ZIP", "Zip", "ZipCode", "ZIPCODE", "MailZip"])
-
     df["CityOut"] = df[city_col] if city_col else ""
     df["StateOut"] = df[state_col] if state_col else ""
     df["ZipOut"] = df[zip_col] if zip_col else ""
-
     out = df[["Name", "Address1", "CityOut", "StateOut", "ZipOut"]].copy()
     if "Party" in df.columns:
         out["Party"] = df["Party"]
     if "Age" in df.columns:
         out["Age"] = df["Age"]
-
     out = out.rename(columns={"CityOut": "City", "StateOut": "State", "ZipOut": "Zip"})
-
     if householded:
         key = "_HouseholdKey" if "_HouseholdKey" in df.columns else None
         if key:
@@ -613,7 +607,6 @@ def build_mail_export(active_filters, householded=False):
             temp = temp.sort_values(by=["_grp", "Name"])
             temp = temp.drop_duplicates(subset=["_grp"], keep="first")
             out = temp[out.columns].copy()
-
     return out.reset_index(drop=True)
 
 def dataframe_to_csv_bytes(df):
