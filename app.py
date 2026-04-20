@@ -868,16 +868,38 @@ def build_filtered_csv_export(active_filters):
 def build_texting_export(active_filters):
     df = fetch_filtered_detail(active_filters).copy()
     if df.empty:
-        return pd.DataFrame(columns=["Name", "Mobile", "Party", "Age", "County", "Precinct"])
+        return pd.DataFrame(columns=["Name", "Mobile", "PA ID Number", "Party", "Age", "County", "Precinct"])
+
     df["Name"] = df.apply(full_name_from_row, axis=1)
-    mobile_col = "Mobile" if "Mobile" in df.columns else None
+
+    mobile_col = first_existing_detail(df.columns.tolist(), ["Mobile", "Cell", "CellPhone", "Cell Phone"])
     if mobile_col is None:
         df["MobileClean"] = ""
     else:
         df["MobileClean"] = df[mobile_col].apply(clean_phone_value)
-    cols = [c for c in ["Name", "Party", "Age", "County", "Precinct"] if c in df.columns]
-    out = df[cols].copy()
-    out.insert(1, "Mobile", df["MobileClean"])
+
+    pa_id_col = first_existing_detail(
+        df.columns.tolist(),
+        [
+            "PA ID Number", "PA_ID_Number", "PAID", "PA ID", "StateVoterID",
+            "State Voter ID", "VoterID", "Voter ID", "VUID"
+        ],
+    )
+    if pa_id_col is None:
+        df["PA ID Number"] = ""
+    else:
+        df["PA ID Number"] = df[pa_id_col].apply(normalize_numeric_string)
+
+    out = pd.DataFrame({
+        "Name": df["Name"].apply(normalize_name_value),
+        "Mobile": df["MobileClean"],
+        "PA ID Number": df["PA ID Number"],
+    })
+
+    for col in ["Party", "Age", "County", "Precinct"]:
+        if col in df.columns:
+            out[col] = df[col]
+
     out = out[out["Mobile"].astype(str).str.strip() != ""]
     return out.reset_index(drop=True)
 
@@ -1646,6 +1668,107 @@ def generate_street_list_pdf_bytes(active_filters):
     c.save()
     return buffer.getvalue()
 
+
+
+def _draw_walk_sheet_page_header(c, width, height, title, subtitle):
+    draw_brand(c, height - 18)
+    c.setFillColor(REPORT_NAVY)
+    c.setFont("Helvetica-Bold", 17)
+    c.drawString(40, height - 74, truncate_text(title, 90))
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica", 9)
+    c.drawString(40, height - 88, truncate_text(subtitle, 120))
+
+
+def generate_walk_sheet_pdf_bytes(active_filters):
+    street_df = build_street_list_dataframe(active_filters)
+    if street_df.empty:
+        return b""
+
+    street_df = street_df.fillna("")
+    printed_date = datetime.now().strftime("%m/%d/%Y")
+    area_desc = selected_area_desc(active_filters)
+    filter_lines = build_filter_summary_lines(active_filters)
+    filter_text = " | ".join(filter_lines[:3]) if filter_lines else "Filtered universe"
+
+    buffer = BytesIO()
+    page_size = landscape(letter)
+    c = canvas.Canvas(buffer, pagesize=page_size)
+    width, height = page_size
+    body_top = height - 108
+    body_bottom = 44
+    row_h = 16
+    page_num = 1
+
+    for precinct, precinct_grp in street_df.groupby("Precinct", sort=False):
+        page_in_precinct = 1
+        y = body_top
+        title = f"Walk Sheet - Precinct {precinct}" if normalize_export_text(precinct) else "Walk Sheet"
+        subtitle = f"{area_desc} | {filter_text}"
+        _draw_walk_sheet_page_header(c, width, height, title, subtitle)
+
+        for (street, address), addr_grp in precinct_grp.groupby(["StreetGroup", "AddressLine"], sort=False, dropna=False):
+            needed = 30 + (len(addr_grp) * row_h) + 18
+            if y - needed < body_bottom:
+                draw_footer(c, page_num, page_num, printed_date)
+                c.showPage()
+                page_num += 1
+                page_in_precinct += 1
+                y = body_top
+                cont_title = f"Walk Sheet - Precinct {precinct} (cont. {page_in_precinct})" if normalize_export_text(precinct) else f"Walk Sheet (cont. {page_in_precinct})"
+                _draw_walk_sheet_page_header(c, width, height, cont_title, subtitle)
+
+            c.setFillColor(REPORT_STREET)
+            c.roundRect(40, y - 20, width - 80, 18, 5, fill=1, stroke=0)
+            c.setFillColor(REPORT_NAVY)
+            c.setFont("Helvetica-Bold", 10)
+            street_label = truncate_text(street, 60)
+            address_label = truncate_text(address, 22)
+            c.drawString(48, y - 13, f"{street_label}  |  {address_label}")
+            y -= 24
+
+            for _, row in addr_grp.iterrows():
+                c.setStrokeColor(REPORT_GRID)
+                c.rect(44, y - 11, 10, 10, fill=0, stroke=1)
+                c.rect(62, y - 11, 10, 10, fill=0, stroke=1)
+                c.rect(80, y - 11, 10, 10, fill=0, stroke=1)
+                c.setFillColor(colors.black)
+                c.setFont("Helvetica-Bold", 6.5)
+                c.drawCentredString(49, y - 18, "C")
+                c.drawCentredString(67, y - 18, "N")
+                c.drawCentredString(85, y - 18, "F")
+
+                c.setFont("Helvetica-Bold", 9)
+                c.drawString(102, y - 4, truncate_text(row.get("FullName", ""), 32))
+                c.setFont("Helvetica", 8)
+                voter_meta = " / ".join([
+                    part for part in [
+                        truncate_text(row.get("Phone", ""), 22),
+                        normalize_export_text(row.get("Party", "")),
+                        normalize_export_text(row.get("Sex", "")),
+                        normalize_export_text(row.get("Age", "")),
+                        f"MB {normalize_export_text(row.get('MB_Perm', ''))}" if normalize_export_text(row.get("MB_Perm", "")) else "",
+                    ] if part
+                ])
+                c.drawString(290, y - 4, truncate_text(voter_meta, 52))
+                c.setStrokeColor(REPORT_GRID)
+                c.line(430, y - 6, width - 48, y - 6)
+                y -= row_h
+
+            c.setFillColor(colors.black)
+            c.setFont("Helvetica-Oblique", 7.5)
+            c.drawString(444, y + 2, "Notes")
+            y -= 10
+
+        draw_footer(c, page_num, page_num, printed_date)
+        c.showPage()
+        page_num += 1
+
+    c.save()
+    pdf_data = buffer.getvalue()
+    buffer.close()
+    return pdf_data
+
 cc_logo_uri = img_to_data_uri(CC_LOGO)
 tss_logo_uri = img_to_data_uri(TSS_LOGO)
 
@@ -1948,7 +2071,7 @@ st.markdown('</div>', unsafe_allow_html=True)
 divider()
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Reports</div>', unsafe_allow_html=True)
-st.caption("Generate polished PDF reports from the current filtered universe. Summary Report is ready now.")
+st.caption("Generate polished PDF reports from the current filtered universe. Summary Report and Walk Sheet are ready now.")
 
 report_type = st.selectbox(
     "Select Report Type",
@@ -1968,6 +2091,9 @@ with report_cols[0]:
                     gender_df=gender_df,
                     age_df=age_df,
                 )
+        elif report_type == "Walk Sheet":
+            with st.spinner("Building Walk Sheet PDF..."):
+                st.session_state["walk_sheet_pdf_bytes"] = generate_walk_sheet_pdf_bytes(active)
         else:
             st.info(f"{report_type} is the next report type to build.")
 
@@ -1977,6 +2103,14 @@ with report_cols[1]:
             "Download Summary Report PDF",
             data=st.session_state["summary_report_pdf_bytes"],
             file_name="candidate_connect_summary_report.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    elif report_type == "Walk Sheet" and st.session_state.get("walk_sheet_pdf_bytes"):
+        st.download_button(
+            "Download Walk Sheet PDF",
+            data=st.session_state["walk_sheet_pdf_bytes"],
+            file_name="candidate_connect_walk_sheet.pdf",
             mime="application/pdf",
             use_container_width=True,
         )
