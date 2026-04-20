@@ -3,39 +3,11 @@ from pathlib import Path
 import base64
 import re
 
-def collapse_spaces
-
-def proper_case_word(word: str) -> str:
-    if not word:
-        return ""
-    word = str(word)
-    if word.upper() in {"JR","SR","II","III","IV","V"}:
-        return word.upper()
-    if "-" in word:
-        return "-".join([w.capitalize() for w in word.split("-")])
-    if "'" in word:
-        return "'".join([w.capitalize() for w in word.split("'")])
-    return word.capitalize()
-(value: str) -> str:
-    if value is None:
-        return ""
-    return re.sub(r"\s+", " ", str(value)).strip()
-
-import io
-from datetime import datetime
-
-
 import altair as alt
 import duckdb
 import pandas as pd
 import requests
 import streamlit as st
-
-from reportlab.lib.pagesizes import letter
-from reportlab.lib import colors
-from reportlab.lib.utils import ImageReader
-from reportlab.pdfgen import canvas
-
 
 st.set_page_config(page_title="Candidate Connect", layout="wide")
 
@@ -194,7 +166,7 @@ def build_view_sql(columns, local_paths):
     vote_hist_col = first_existing(columns, ["V4A"])
     mib_applied_col = first_existing(columns, ["MIB_Applied"])
     mib_ballot_col = first_existing(columns, ["MIB_BALLOT"])
-    mb_score_col = first_existing(columns, ["MMB_AProp_Score"])
+    mb_score_col = first_existing(columns, ["MB_AProp_Score", "MMB_AProp_Score"])
     mb_perm_col = first_existing(columns, ["MB_PERM", "MB_Perm", "MB_Pern"])
     age_col = first_existing(columns, ["Age"])
     house_col = first_existing(columns, ["House Number"])
@@ -270,7 +242,7 @@ def build_view_sql(columns, local_paths):
         exprs.append("'' as _MIBBallot")
 
     if mb_score_col:
-        exprs.append(f"try_cast({q(mb_score_col)} as double) as _MBScore")
+        exprs.append(f"try_cast(regexp_replace(cast({q(mb_score_col)} as varchar), '[^0-9\\.-]', '', 'g') as double) as _MBScore")
     else:
         exprs.append("NULL::DOUBLE as _MBScore")
 
@@ -563,20 +535,125 @@ def clean_phone_value(val):
     return digits
 
 
+USPS_SUFFIX_MAP = {
+    "STREET": "ST", "ST": "ST",
+    "ROAD": "RD", "RD": "RD",
+    "AVENUE": "AVE", "AVE": "AVE",
+    "DRIVE": "DR", "DR": "DR",
+    "LANE": "LN", "LN": "LN",
+    "COURT": "CT", "CT": "CT",
+    "CIRCLE": "CIR", "CIR": "CIR",
+    "BOULEVARD": "BLVD", "BLVD": "BLVD",
+    "PLACE": "PL", "PL": "PL",
+    "TERRACE": "TER", "TER": "TER",
+    "PARKWAY": "PKWY", "PKWY": "PKWY",
+    "HIGHWAY": "HWY", "HWY": "HWY",
+    "MOUNT": "MT", "MT": "MT",
+}
+STATE_ABBR = {
+    "ALABAMA":"AL","ALASKA":"AK","ARIZONA":"AZ","ARKANSAS":"AR","CALIFORNIA":"CA","COLORADO":"CO",
+    "CONNECTICUT":"CT","DELAWARE":"DE","FLORIDA":"FL","GEORGIA":"GA","HAWAII":"HI","IDAHO":"ID",
+    "ILLINOIS":"IL","INDIANA":"IN","IOWA":"IA","KANSAS":"KS","KENTUCKY":"KY","LOUISIANA":"LA",
+    "MAINE":"ME","MARYLAND":"MD","MASSACHUSETTS":"MA","MICHIGAN":"MI","MINNESOTA":"MN","MISSISSIPPI":"MS",
+    "MISSOURI":"MO","MONTANA":"MT","NEBRASKA":"NE","NEVADA":"NV","NEW HAMPSHIRE":"NH","NEW JERSEY":"NJ",
+    "NEW MEXICO":"NM","NEW YORK":"NY","NORTH CAROLINA":"NC","NORTH DAKOTA":"ND","OHIO":"OH","OKLAHOMA":"OK",
+    "OREGON":"OR","PENNSYLVANIA":"PA","RHODE ISLAND":"RI","SOUTH CAROLINA":"SC","SOUTH DAKOTA":"SD",
+    "TENNESSEE":"TN","TEXAS":"TX","UTAH":"UT","VERMONT":"VT","VIRGINIA":"VA","WASHINGTON":"WA",
+    "WEST VIRGINIA":"WV","WISCONSIN":"WI","WYOMING":"WY","DISTRICT OF COLUMBIA":"DC"
+}
+NAME_SUFFIXES = {"JR","SR","II","III","IV","V"}
+
+def collapse_spaces(value: str) -> str:
+    return re.sub(r"\s+", " ", normalize_export_text(value)).strip()
+
+def proper_case_word(word: str) -> str:
+    if not word:
+        return ""
+    up = word.upper()
+    if up in NAME_SUFFIXES:
+        return up
+    if re.fullmatch(r"[A-Z]\.", up):
+        return up
+    if "'" in word:
+        return "'".join(part.capitalize() if part else "" for part in word.lower().split("'"))
+    if "-" in word:
+        return "-".join(part.capitalize() if part else "" for part in word.lower().split("-"))
+    return word.lower().capitalize()
+
+def normalize_name_value(value: str) -> str:
+    s = collapse_spaces(value)
+    if not s:
+        return ""
+    return " ".join(proper_case_word(part) for part in s.split(" "))
+
+def normalize_city_value(value: str) -> str:
+    s = collapse_spaces(value)
+    if not s:
+        return ""
+    return " ".join(proper_case_word(part) for part in s.split(" "))
+
+def normalize_state_value(value: str) -> str:
+    s = collapse_spaces(value).upper()
+    if not s:
+        return ""
+    if len(s) == 2 and s.isalpha():
+        return s
+    return STATE_ABBR.get(s, s[:2] if len(s) >= 2 else s)
+
 def normalize_address_value(value: str) -> str:
     s = collapse_spaces(value)
     if not s:
         return ""
-    s = re.sub(r"\bApartment\b", "Apt", s, flags=re.IGNORECASE)
-    s = re.sub(r"\bSuite\b", "Ste", s, flags=re.IGNORECASE)
-    s = re.sub(r"\bUnit\b", "Unit", s, flags=re.IGNORECASE)
+
+    s = re.sub(r"Apartment", "Apt", s, flags=re.IGNORECASE)
+    s = re.sub(r"Suite", "Ste", s, flags=re.IGNORECASE)
+    s = re.sub(r"Unit", "Unit", s, flags=re.IGNORECASE)
+
     words = s.split(" ")
     words = [proper_case_word(w) for w in words]
+
     if words:
         last = re.sub(r"[^A-Za-z]", "", words[-1]).upper()
         if last in USPS_SUFFIX_MAP:
             words[-1] = USPS_SUFFIX_MAP[last].title()
+
     return " ".join(words)
+
+def normalize_mail_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "Name" in out.columns:
+        out["Name"] = out["Name"].apply(normalize_name_value)
+    if "Address1" in out.columns:
+        out["Address1"] = out["Address1"].apply(normalize_address_value)
+    if "City" in out.columns:
+        out["City"] = out["City"].apply(normalize_city_value)
+    if "State" in out.columns:
+        out["State"] = out["State"].apply(normalize_state_value)
+    if "Zip" in out.columns:
+        out["Zip"] = out["Zip"].apply(clean_zip_value)
+    return out
+
+def normalize_filtered_export_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for col in ["FirstName", "MiddleName", "LastName", "FullName", "Name", "NameSuffix"]:
+        if col in out.columns:
+            out[col] = out[col].apply(normalize_name_value)
+    for col in ["Street Name", "Address", "Address1", "Mailing Address", "MailAddress"]:
+        if col in out.columns:
+            out[col] = out[col].apply(normalize_address_value)
+    for col in ["City", "MailingCity", "Mailing City", "MailCity"]:
+        if col in out.columns:
+            out[col] = out[col].apply(normalize_city_value)
+    for col in ["State", "MailingState", "Mailing State", "MailState"]:
+        if col in out.columns:
+            out[col] = out[col].apply(normalize_state_value)
+    for col in ["Zip", "ZIP", "ZipCode", "ZIPCODE", "MailingZip", "Mailing Zip", "MailZip"]:
+        if col in out.columns:
+            out[col] = out[col].apply(clean_zip_value)
+    for col in ["PrimaryPhone", "Mobile", "Landline"]:
+        if col in out.columns:
+            out[col] = out[col].apply(clean_phone_value)
+    return out
 
 def safe_group_series(group: pd.DataFrame, column_name: str) -> pd.Series:
     if column_name not in group.columns:
@@ -745,7 +822,7 @@ def build_detail_export_sql(detail_paths, active_filters):
         exprs.append("'' as _MIBBallot")
 
     if mb_score_col:
-        exprs.append(f"try_cast({q(mb_score_col)} as double) as _MBScore")
+        exprs.append(f"try_cast(regexp_replace(cast({q(mb_score_col)} as varchar), '[^0-9\\.-]', '', 'g') as double) as _MBScore")
     else:
         exprs.append("NULL::DOUBLE as _MBScore")
 
@@ -774,13 +851,7 @@ def fetch_filtered_detail(active_filters):
 
 def build_filtered_csv_export(active_filters):
     df = fetch_filtered_detail(active_filters).copy()
-    for col in ["Zip", "ZIP", "ZipCode", "ZIPCODE", "MailingZip", "Mailing Zip", "MailZip"]:
-        if col in df.columns:
-            df[col] = df[col].apply(clean_zip_value)
-    for col in ["PrimaryPhone", "Mobile", "Landline"]:
-        if col in df.columns:
-            df[col] = df[col].apply(clean_phone_value)
-    return df
+    return normalize_filtered_export_dataframe(df)
 
 def build_texting_export(active_filters):
     df = fetch_filtered_detail(active_filters).copy()
@@ -802,446 +873,91 @@ def build_mail_export(active_filters, householded=False):
     df = fetch_filtered_detail(active_filters).copy()
     if df.empty:
         return pd.DataFrame(columns=["Name", "Address1", "City", "State", "Zip", "Party", "Age"])
+
     df["Name"] = df.apply(full_name_from_row, axis=1)
     df["Address1"] = df.apply(build_address_line1_row, axis=1)
+
     city_col = first_existing_detail(df.columns.tolist(), ["MailingCity", "Mailing City", "City", "MailCity"])
     state_col = first_existing_detail(df.columns.tolist(), ["MailingState", "Mailing State", "State", "MailState"])
     zip_col = first_existing_detail(df.columns.tolist(), ["MailingZip", "Mailing Zip", "ZIP", "Zip", "ZipCode", "ZIPCODE", "MailZip"])
+
     df["CityOut"] = df[city_col].apply(normalize_export_text) if city_col else ""
     df["StateOut"] = df[state_col].apply(normalize_export_text) if state_col else ""
     df["ZipOut"] = df[zip_col].apply(clean_zip_value) if zip_col else ""
 
-    out = df[["Name", "Address1", "CityOut", "StateOut", "ZipOut"]].copy()
+    export_df = pd.DataFrame({
+        "MailName": df["Name"].apply(normalize_export_text),
+        "Address1": df["Address1"].apply(normalize_export_text),
+        "City": df["CityOut"].apply(normalize_export_text),
+        "State": df["StateOut"].apply(normalize_export_text),
+        "Zip": df["ZipOut"].apply(clean_zip_value),
+    })
     if "Party" in df.columns:
-        out["Party"] = df["Party"]
+        export_df["Party"] = df["Party"]
     if "Age" in df.columns:
-        out["Age"] = df["Age"]
-    out = out.rename(columns={"CityOut": "City", "StateOut": "State", "ZipOut": "Zip"})
+        export_df["Age"] = df["Age"]
 
     if householded:
-        key = "_HouseholdKey" if "_HouseholdKey" in df.columns else None
-        temp = pd.concat([df.reset_index(drop=True), out.reset_index(drop=True)], axis=1)
+        key_name = "_HouseholdKey" if "_HouseholdKey" in df.columns else None
+        temp = pd.DataFrame({
+            "_BaseName": df["Name"].apply(normalize_export_text),
+            "FirstName": safe_group_series(df, "FirstName"),
+            "LastName": safe_group_series(df, "LastName"),
+            "Address1": export_df["Address1"].apply(normalize_export_text),
+            "City": export_df["City"].apply(normalize_export_text),
+            "State": export_df["State"].apply(normalize_export_text),
+            "Zip": export_df["Zip"].apply(clean_zip_value),
+        })
+        if "Party" in export_df.columns:
+            temp["Party"] = export_df["Party"]
+        if "Age" in export_df.columns:
+            temp["Age"] = export_df["Age"]
 
         address_text = temp["Address1"].apply(normalize_export_text)
         zip_text = temp["Zip"].apply(clean_zip_value)
         fallback_key = address_text + "|" + zip_text
 
-        if key:
-            base_key = temp[key].apply(normalize_export_text)
+        if key_name and key_name in df.columns:
+            base_key = safe_group_series(df, key_name)
             grp_key = base_key.where(base_key != "", fallback_key)
         else:
             grp_key = fallback_key
 
-        temp["_grp"] = grp_key
+        temp["_grp"] = grp_key.fillna("").astype(str)
+        temp["Name"] = temp["_BaseName"]
 
         grouped_rows = []
-        for _, grp in temp.sort_values(by=["_grp", "Name"]).groupby("_grp", dropna=False):
-            first = grp.iloc[0].copy()
-            first["Name"] = build_household_mail_name(grp)
-            grouped_rows.append(first[out.columns].to_dict())
-        out = pd.DataFrame(grouped_rows, columns=out.columns)
+        grouped = temp.sort_values(by=["_grp", "_BaseName"]).groupby("_grp", dropna=False, sort=False)
+        for _, grp in grouped:
+            first_row = grp.iloc[0].copy()
+            first_row["MailName"] = build_household_mail_name(grp)
+            row = {
+                "Name": first_row["MailName"],
+                "Address1": normalize_export_text(first_row["Address1"]),
+                "City": normalize_export_text(first_row["City"]),
+                "State": normalize_export_text(first_row["State"]),
+                "Zip": clean_zip_value(first_row["Zip"]),
+            }
+            if "Party" in temp.columns:
+                row["Party"] = first_row.get("Party", "")
+            if "Age" in temp.columns:
+                row["Age"] = first_row.get("Age", "")
+            grouped_rows.append(row)
 
-    return out.reset_index(drop=True)
+        out = pd.DataFrame(grouped_rows)
+        cols = ["Name", "Address1", "City", "State", "Zip"] + [c for c in ["Party", "Age"] if c in out.columns]
+        out = out[cols]
+        out = out.reset_index(drop=True)
+        return normalize_mail_dataframe(out)
+
+    out = export_df.rename(columns={"MailName": "Name"})
+    cols = ["Name", "Address1", "City", "State", "Zip"] + [c for c in ["Party", "Age"] if c in out.columns]
+    out = out[cols]
+    out = out.reset_index(drop=True)
+    return normalize_mail_dataframe(out)
 
 def dataframe_to_csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
-
-
-def safe_int_from_value(value):
-    s = normalize_export_text(value)
-    if not s:
-        return 10**9
-    digits = re.findall(r"\d+", s)
-    if digits:
-        try:
-            return int(digits[0])
-        except Exception:
-            return 10**9
-    return 10**9
-
-def normalize_checkbox_flag(value) -> bool:
-    s = normalize_export_text(value).upper()
-    return s in {"Y", "YES", "TRUE", "T", "1"}
-
-def normalize_mb_perm_value(value) -> str:
-    s = normalize_export_text(value).upper()
-    if s in {"Y", "YES", "TRUE", "T", "1"}:
-        return "Y"
-    if s in {"N", "NO", "FALSE", "F", "0"}:
-        return "N"
-    return ""
-
-def choose_phone_and_type(row) -> tuple[str, str]:
-    mobile = clean_phone_value(row.get("Mobile", ""))
-    landline = clean_phone_value(row.get("Landline", ""))
-    primary = clean_phone_value(row.get("PrimaryPhone", ""))
-    if mobile:
-        return mobile, "m"
-    if landline:
-        return landline, "l"
-    if primary:
-        return primary, "p"
-    return "", ""
-
-def format_phone_display(row) -> str:
-    number, kind = choose_phone_and_type(row)
-    if not number:
-        return ""
-    if len(number) == 10:
-        number = f"({number[:3]}) {number[3:6]}-{number[6:]}"
-    elif len(number) == 7:
-        number = f"{number[:3]}-{number[3:]}"
-    return f"{number} ({kind})" if kind else number
-
-def compact_filter_summary(active_filters: dict) -> list[str]:
-    lines = []
-    geo_cols = ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"]
-    for col in geo_cols:
-        vals = active_filters.get(col, [])
-        if vals:
-            sample = ", ".join(map(str, vals[:3]))
-            if len(vals) > 3:
-                sample += f" (+{len(vals)-3} more)"
-            lines.append(f"{col}: {sample}")
-    mapping = [
-        ("party_pick", "Party"), ("hh_party_pick", "Household Party"),
-        ("calc_party_pick", "Calculated Party"), ("gender_pick", "Gender"),
-        ("age_range_pick", "Age Range"), ("vote_history_pick", "Vote History"),
-        ("mib_applied_pick", "Mail Ballot App"), ("mib_ballot_pick", "Mail Ballot Vote"),
-        ("mb_perm_pick", "MB Perm"),
-    ]
-    for key, label in mapping:
-        vals = active_filters.get(key, [])
-        if vals:
-            sample = ", ".join(map(str, vals[:4]))
-            if len(vals) > 4:
-                sample += f" (+{len(vals)-4} more)"
-            lines.append(f"{label}: {sample}")
-    if active_filters.get("age_slider") is not None:
-        lo, hi = active_filters["age_slider"]
-        lines.append(f"Age: {lo} to {hi}")
-    if active_filters.get("mb_score_slider") is not None:
-        lo, hi = active_filters["mb_score_slider"]
-        lines.append(f"MB Probability Score: {lo:.2f} to {hi:.2f}")
-    if active_filters.get("new_reg_months", 0):
-        lines.append(f"Newly Registered: within last {int(active_filters['new_reg_months'])} months")
-    for key, label in [("has_email", "Email"), ("has_landline", "Landline"), ("has_mobile", "Mobile")]:
-        val = active_filters.get(key, "All")
-        if val and val != "All":
-            lines.append(f"{label}: {val}")
-    return lines or ["All active voters in current loaded geography / filter scope"]
-
-def build_street_report_dataframe(active_filters):
-    df = fetch_filtered_detail(active_filters).copy()
-    if df.empty:
-        return df
-
-    if "Full Name" not in df.columns:
-        df["Full Name"] = df.apply(full_name_from_row, axis=1)
-    else:
-        df["Full Name"] = df["Full Name"].apply(normalize_name_value)
-        blank_mask = df["Full Name"].astype(str).str.strip() == ""
-        if blank_mask.any():
-            df.loc[blank_mask, "Full Name"] = df[blank_mask].apply(full_name_from_row, axis=1)
-
-    df["Street"] = df.get("Street Name", "").apply(normalize_address_value) if "Street Name" in df.columns else ""
-    df["HouseNumSort"] = df.get("House Number", "").apply(safe_int_from_value) if "House Number" in df.columns else 10**9
-    df["House Number Text"] = df.get("House Number", "").apply(normalize_export_text) if "House Number" in df.columns else ""
-    df["Apartment Text"] = df.get("Apartment Number", "").apply(normalize_export_text) if "Apartment Number" in df.columns else ""
-    df["Address Line1"] = df.apply(build_address_line1_row, axis=1).apply(normalize_address_value)
-    df["Phone Display"] = df.apply(format_phone_display, axis=1)
-    df["Party Display"] = df.get("Party", "").apply(normalize_export_text) if "Party" in df.columns else ""
-    if "Sex" in df.columns:
-        df["Sex Display"] = df["Sex"].apply(normalize_export_text)
-    elif "Gender" in df.columns:
-        df["Sex Display"] = df["Gender"].apply(normalize_export_text)
-    else:
-        df["Sex Display"] = ""
-    df["Age Display"] = df.get("Age", "").apply(normalize_export_text) if "Age" in df.columns else ""
-    df["MB Perm Display"] = ""
-    for col in ["MB_PERM", "MB_Perm", "MB_Pern"]:
-        if col in df.columns:
-            df["MB Perm Display"] = df[col].apply(normalize_mb_perm_value)
-            break
-
-    # checkbox columns
-    for col in ["F", "A", "U", "Yard Sign"]:
-        if col in df.columns:
-            df[col] = df[col].apply(normalize_checkbox_flag)
-        else:
-            df[col] = False
-    df["NH"] = False
-
-    if "Precinct" not in df.columns:
-        df["Precinct"] = "(No Precinct)"
-    df["Precinct"] = df["Precinct"].apply(normalize_export_text).replace("", "(No Precinct)")
-    df["Street"] = df["Street"].replace("", "(No Street)")
-    df["AptSort"] = df["Apartment Text"].str.upper()
-
-    sort_cols = ["Precinct", "Street", "HouseNumSort", "Apartment Text", "Full Name"]
-    df = df.sort_values(by=sort_cols, kind="stable").reset_index(drop=True)
-    return df
-
-def count_households_from_report_df(frame: pd.DataFrame) -> int:
-    if len(frame) == 0:
-        return 0
-    keys = frame["Address Line1"].astype(str).fillna("") + "|" + frame["Precinct"].astype(str).fillna("")
-    return keys.nunique()
-
-def build_precinct_counts_for_report(report_df: pd.DataFrame) -> pd.DataFrame:
-    if report_df.empty:
-        return pd.DataFrame(columns=["Precinct", "Individuals", "Households"])
-    temp = report_df.copy()
-    temp["_hh"] = temp["Precinct"].astype(str).fillna("") + "|" + temp["Address Line1"].astype(str).fillna("")
-    out = (
-        temp.groupby("Precinct", dropna=False)
-        .agg(Individuals=("Precinct", "size"), Households=("_hh", "nunique"))
-        .reset_index()
-        .sort_values("Precinct")
-        .reset_index(drop=True)
-    )
-    return out
-
-def _draw_checkbox(c, x, y_center, size=7):
-    c.rect(x, y_center - size/2, size, size, stroke=1, fill=0)
-
-def _draw_footer(c, page_num, total_pages, printed_date):
-    width, _ = letter
-    c.setStrokeColor(colors.HexColor("#d7d1d1"))
-    c.line(36, 30, width - 36, 30)
-    c.setFont("Helvetica", 9)
-    c.setFillColor(colors.black)
-    c.drawString(36, 18, f"{page_num} of {total_pages}")
-    c.drawRightString(width - 36, 18, f"Updated: {printed_date}")
-
-def _draw_powered_by(c, page_title=None):
-    width, height = letter
-    right_x = width - 36
-    if page_title:
-        c.setFont("Helvetica-Bold", 15)
-        c.drawString(36, height - 40, page_title)
-    c.setFont("Helvetica-Bold", 8)
-    c.drawRightString(right_x, height - 22, "Powered By")
-    if TSS_LOGO.exists():
-        try:
-            img = ImageReader(str(TSS_LOGO))
-            c.drawImage(img, right_x - 55, height - 44, width=50, height=18, preserveAspectRatio=True, mask='auto')
-        except Exception:
-            pass
-
-def _draw_cover_page(c, total_pages, printed_date, report_df, active_filters):
-    width, height = letter
-    if CC_LOGO.exists():
-        try:
-            img = ImageReader(str(CC_LOGO))
-            c.drawImage(img, 36, height - 85, width=130, height=36, preserveAspectRatio=True, mask='auto')
-        except Exception:
-            pass
-    _draw_powered_by(c)
-
-    county_text = ", ".join(active_filters.get("County", [])[:3]) if active_filters.get("County") else "Selected Area"
-    c.setFont("Helvetica-Bold", 22)
-    c.drawString(36, height - 120, county_text or "Selected Area")
-    c.setFont("Helvetica", 12)
-    c.drawString(36, height - 140, printed_date)
-
-    title_bits = []
-    if active_filters.get("party_pick"):
-        title_bits.append("/".join(active_filters["party_pick"]) + " voters")
-    else:
-        title_bits.append("Filtered voters")
-    if active_filters.get("County"):
-        title_bits.append("in " + ", ".join(active_filters["County"][:2]))
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(36, height - 170, " ".join(title_bits).strip())
-
-    individuals = len(report_df)
-    households = count_households_from_report_df(report_df)
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(36, height - 195, f"Individuals: {individuals:,}  Households: {households:,}")
-
-    c.setFont("Helvetica-Bold", 13)
-    c.drawString(36, height - 230, "Filters / Area Description")
-    y = height - 248
-    c.setFont("Helvetica", 10)
-    for line in compact_filter_summary(active_filters):
-        wrapped = []
-        line = str(line)
-        while len(line) > 95:
-            cut = line.rfind(" ", 0, 95)
-            if cut == -1:
-                cut = 95
-            wrapped.append(line[:cut])
-            line = line[cut:].strip()
-        wrapped.append(line)
-        for part in wrapped:
-            if y < 70:
-                break
-            c.drawString(48, y, "- " + part)
-            y -= 13
-
-    _draw_footer(c, 1, total_pages, printed_date)
-    c.showPage()
-
-def _draw_counts_summary_pages(c, page_num, total_pages, printed_date, precinct_counts):
-    width, height = letter
-    rows_per_page = 40
-    pages_used = 0
-    for start in range(0, len(precinct_counts), rows_per_page):
-        chunk = precinct_counts.iloc[start:start+rows_per_page]
-        _draw_powered_by(c, "Precinct Counts Summary")
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(36, height - 48, "Precinct Counts Summary")
-
-        top = height - 78
-        c.setFillColor(colors.HexColor("#f2f4f7"))
-        c.rect(36, top - 18, width - 72, 18, stroke=0, fill=1)
-        c.setFillColor(colors.black)
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(42, top - 13, "Precinct")
-        c.drawRightString(width - 100, top - 13, "Individuals")
-        c.drawRightString(width - 42, top - 13, "Households")
-
-        y = top - 32
-        c.setFont("Helvetica", 10)
-        for _, row in chunk.iterrows():
-            precinct = str(row["Precinct"])
-            individuals = f'{int(row["Individuals"]):,}'
-            households = f'{int(row["Households"]):,}'
-            c.drawString(42, y, precinct[:58])
-            c.drawRightString(width - 100, y, individuals)
-            c.drawRightString(width - 42, y, households)
-            y -= 14
-        _draw_footer(c, page_num + pages_used, total_pages, printed_date)
-        pages_used += 1
-        c.showPage()
-    return pages_used
-
-def _build_precinct_page_descriptors(report_df):
-    pages = []
-    max_y = 698
-    bottom_limit = 46
-    current = None
-
-    for precinct, precinct_df in report_df.groupby("Precinct", sort=False):
-        first_page = True
-        y = max_y
-        current_rows = []
-
-        def flush_page(cont_flag):
-            nonlocal current_rows, y, first_page
-            if current_rows:
-                pages.append({"precinct": precinct, "cont": cont_flag, "rows": current_rows[:]})
-                current_rows = []
-                y = max_y
-
-        for street, street_df in precinct_df.groupby("Street", sort=False):
-            if y < bottom_limit + 18:
-                flush_page(not first_page)
-                first_page = False
-            current_rows.append(("street", street))
-            y -= 14
-
-            for address, addr_df in street_df.groupby("Address Line1", sort=False):
-                needed = 12 + len(addr_df) * 12
-                if y - needed < bottom_limit:
-                    flush_page(not first_page)
-                    first_page = False
-                    current_rows.append(("street", street))
-                    y -= 14
-                current_rows.append(("address", address))
-                y -= 12
-                for _, row in addr_df.iterrows():
-                    current_rows.append(("person", row.to_dict()))
-                    y -= 12
-
-        flush_page(not first_page)
-    return pages
-
-def _draw_precinct_page(c, descriptor, page_num, total_pages, printed_date):
-    width, height = letter
-    precinct = descriptor["precinct"]
-    cont = descriptor["cont"]
-    title = precinct + (" (cont)" if cont else "")
-    _draw_powered_by(c, title)
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(36, height - 40, title)
-
-    # header row
-    top = height - 64
-    c.setFillColor(colors.HexColor("#f2f4f7"))
-    c.rect(36, top - 14, width - 72, 16, stroke=0, fill=1)
-    c.setFillColor(colors.black)
-    c.setFont("Helvetica-Bold", 8)
-    c.drawString(40, top - 10, "Full Name")
-    c.drawString(230, top - 10, "Phone")
-    c.drawString(346, top - 10, "Party")
-    c.drawString(382, top - 10, "Sex")
-    c.drawString(410, top - 10, "Age")
-    c.drawString(438, top - 10, "F")
-    c.drawString(454, top - 10, "A")
-    c.drawString(470, top - 10, "U")
-    c.drawString(486, top - 10, "NH")
-    c.drawString(505, top - 10, "Yard Sign")
-    c.drawString(560, top - 10, "MB_Perm")
-
-    y = top - 26
-    c.setFont("Helvetica", 9)
-    last_kind = None
-    for kind, payload in descriptor["rows"]:
-        if kind == "street":
-            c.setFont("Helvetica-Bold", 9)
-            c.drawString(40, y, str(payload))
-            c.setFont("Helvetica", 9)
-            y -= 0
-        elif kind == "address":
-            c.drawString(52, y, str(payload))
-        elif kind == "person":
-            row = payload
-            c.drawString(64, y, str(row.get("Full Name", ""))[:34])
-            c.drawString(230, y, str(row.get("Phone Display", ""))[:18])
-            c.drawCentredString(356, y, str(row.get("Party Display", ""))[:2])
-            c.drawCentredString(390, y, str(row.get("Sex Display", ""))[:1])
-            c.drawCentredString(420, y, str(row.get("Age Display", ""))[:3])
-            _draw_checkbox(c, 434, y+3)
-            _draw_checkbox(c, 450, y+3)
-            _draw_checkbox(c, 466, y+3)
-            _draw_checkbox(c, 482, y+3)
-            _draw_checkbox(c, 502, y+3)
-            c.drawCentredString(576, y, str(row.get("MB Perm Display", ""))[:1])
-        y -= 12
-
-    _draw_footer(c, page_num, total_pages, printed_date)
-
-def build_street_list_pdf_bytes(active_filters):
-    report_df = build_street_report_dataframe(active_filters)
-    if report_df.empty:
-        return b""
-    precinct_counts = build_precinct_counts_for_report(report_df)
-    precinct_pages = _build_precinct_page_descriptors(report_df)
-    counts_pages = max(1, math.ceil(len(precinct_counts) / 40)) if len(precinct_counts) else 1
-    total_pages = 1 + counts_pages + len(precinct_pages)
-    printed_date = datetime.now().strftime("%m/%d/%Y")
-
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=letter)
-
-    _draw_cover_page(c, total_pages, printed_date, report_df, active_filters)
-    page_no = 2
-    used = _draw_counts_summary_pages(c, page_no, total_pages, printed_date, precinct_counts)
-    page_no += used
-
-    for i, desc in enumerate(precinct_pages):
-        bookmark = f"precinct_{i}_{re.sub(r'[^A-Za-z0-9]+', '_', desc['precinct'])}"
-        if not desc["cont"]:
-            c.bookmarkPage(bookmark)
-            c.addOutlineEntry(desc["precinct"], bookmark, level=0, closed=False)
-        _draw_precinct_page(c, desc, page_no, total_pages, printed_date)
-        c.showPage()
-        page_no += 1
-
-    c.save()
-    return buffer.getvalue()
 
 cc_logo_uri = img_to_data_uri(CC_LOGO)
 tss_logo_uri = img_to_data_uri(TSS_LOGO)
@@ -1321,7 +1037,7 @@ with st.sidebar:
                         max(0, min(int(default_vote_idx[1]), max_index)),
                     )
                     vote_idx_range = st.slider(
-                        "Vote History Range",
+                        "Vote History Range (V4A)",
                         min_value=0,
                         max_value=max_index,
                         value=default_vote_idx,
@@ -1388,6 +1104,12 @@ with st.sidebar:
                 "age_range_pick": age_range_pick,
                 "age_slider": age_slider,
                 "vote_history_pick": vote_history_pick,
+                "vote_history_index_range": vote_idx_range,
+                "mib_applied_pick": mib_applied_pick,
+                "mib_ballot_pick": mib_ballot_pick,
+                "mb_perm_pick": mb_perm_pick,
+                "mb_score_slider": mb_score_slider,
+                "new_reg_months": new_reg_months,
                 "has_email": has_email,
                 "has_landline": has_landline,
                 "has_mobile": has_mobile,
@@ -1532,24 +1254,5 @@ with exp_cols[2]:
             mime="text/csv",
             use_container_width=True,
         )
-
-
-street_cols = st.columns(2, gap="medium")
-with street_cols[0]:
-    if st.button("Prepare Street List PDF", use_container_width=True):
-        with st.spinner("Building street list PDF from detail shards..."):
-            pdf_bytes = build_street_list_pdf_bytes(active)
-            st.session_state["street_pdf_bytes"] = pdf_bytes
-    if "street_pdf_bytes" in st.session_state:
-        st.download_button(
-            "Download Street List PDF",
-            data=st.session_state["street_pdf_bytes"],
-            file_name="candidate_connect_street_list.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
-
-with street_cols[1]:
-    st.caption("Street list PDF matches the desktop-style layout: cover, precinct counts summary, precinct sections, footer page counts, and bookmarks.")
 
 st.markdown('</div>', unsafe_allow_html=True)
