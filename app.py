@@ -1215,7 +1215,7 @@ def draw_brand(c, y_top):
     c.drawRightString(width - 40, y_top - 6, "Powered By")
 
 def _street_pdf_precinct_pages(street_df: pd.DataFrame):
-    body_top = 498
+    body_top = 480
     body_bottom = 42
     row_h = 14
     pages = 0
