@@ -645,6 +645,23 @@ def safe_int(val) -> int:
     except Exception:
         return 0
 
+def get_filtered_voter_count_fast(active_filters, columns) -> int:
+    con = get_conn()
+    where_sql, params = current_filter_clause(active_filters, columns)
+    try:
+        row = con.execute(f"SELECT count(*) AS n FROM voters {where_sql}", params).fetchone()
+        return safe_int(row[0] if row else 0)
+    except Exception:
+        return 0
+
+def use_large_filter_mode(active_filters, columns) -> bool:
+    try:
+        return get_filtered_voter_count_fast(active_filters, columns) >= 500000
+    except Exception:
+        return False
+
+
+
 def clean_zip_value(val):
     s = normalize_numeric_string(val)
     if not s:
@@ -1534,6 +1551,21 @@ def apply_global_followup_filters_df(df: pd.DataFrame, active_filters: dict) -> 
 
 
 def query_dashboard_followup_stats(active_filters: dict) -> dict:
+    if use_large_filter_mode(active_filters, columns):
+        return {
+            "contacted_pct": 0,
+            "nh_pct": 0,
+            "followup_pct": 0,
+            "strong_pct": 0,
+            "undecided_pct": 0,
+            "contacted_count": 0,
+            "nh_count": 0,
+            "followup_count": 0,
+            "strong_count": 0,
+            "undecided_count": 0,
+            "large_mode": True,
+        }
+
     df = fetch_filtered_detail(active_filters)
     if df is None or df.empty:
         return {
@@ -1547,6 +1579,7 @@ def query_dashboard_followup_stats(active_filters: dict) -> dict:
             "followup_count": 0,
             "strong_count": 0,
             "undecided_count": 0,
+            "large_mode": False,
         }
 
     df = merge_uploaded_street_results_into_detail_df(df)
@@ -1598,6 +1631,7 @@ def query_dashboard_followup_stats(active_filters: dict) -> dict:
         "followup_count": int(followup_mask.sum()),
         "strong_count": int(strong_mask.sum()),
         "undecided_count": int(undecided_mask.sum()),
+        "large_mode": False,
     }
 
 def _query_metrics_from_detail(active_filters, columns):
@@ -3231,6 +3265,7 @@ columns = st.session_state.columns
 
 with st.spinner("Running DuckDB queries..."):
     metrics = query_metrics(active, columns)
+    large_filter_mode = use_large_filter_mode(active, columns)
     followup_stats = query_dashboard_followup_stats(active)
     party_df = query_chart(active, columns, "_PartyNorm", "Party")
     gender_df = query_chart(active, columns, "_Gender", "Gender")
@@ -3265,6 +3300,9 @@ for col, (label, value, subvalue) in zip(campaign_cols, campaign_values):
 
 divider()
 
+if large_filter_mode:
+    st.warning("Large statewide filter detected. To keep the app stable, some detail-heavy tracking calculations are temporarily simplified until you narrow the universe.")
+
 dashboard_tabs = st.tabs(["Overview", "Contact Tracking", "Output Center"])
 
 with dashboard_tabs[0]:
@@ -3297,6 +3335,8 @@ with dashboard_tabs[0]:
     st.markdown('</div>', unsafe_allow_html=True)
 
 with dashboard_tabs[1]:
+    if large_filter_mode:
+        st.info("Contact Tracking detail stats are limited for very large filters. Narrow geography or use exports/reports for deeper detail.")
     tracking_cols = st.columns(2, gap="medium")
     with tracking_cols[0]:
         st.markdown('<div class="table-card">', unsafe_allow_html=True)
@@ -3319,6 +3359,8 @@ with dashboard_tabs[1]:
         st.markdown('</div>', unsafe_allow_html=True)
 
 with dashboard_tabs[2]:
+    if large_filter_mode:
+        st.caption("Large-filter mode is active. Prepare outputs only when needed, or narrow the universe first for faster performance.")
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="small-header">Output Center</div>', unsafe_allow_html=True)
     
