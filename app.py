@@ -1421,6 +1421,29 @@ def summarize_universe_filters(active_filters: dict) -> str:
         parts.append(f"Support Level: {support_level}")
     return " | ".join(parts) if parts else "No filters"
 
+
+def apply_followup_preset(preset_name: str):
+    current = dict(st.session_state.get("active_filters", {}) or {})
+    current["contact_status"] = "All"
+    current["global_nh"] = "All"
+    current["global_follow_up"] = "All"
+    current["global_support_level"] = "All"
+
+    if preset_name == "Re-Knock List":
+        current["global_nh"] = "Yes"
+    elif preset_name == "Follow-Up List":
+        current["global_follow_up"] = "Yes"
+    elif preset_name == "GOTV Supporters":
+        current["global_support_level"] = "Strong"
+    elif preset_name == "Undecided Persuasion":
+        current["global_support_level"] = "Undecided"
+    elif preset_name == "Yard Sign Follow-Up":
+        current["contact_status"] = "Contacted"
+
+    st.session_state.active_filters = current
+    st.session_state.filters_applied = True
+    st.rerun()
+
 def get_global_support_level_options() -> list[str]:
     uploaded = st.session_state.get("walk_results_df")
     if isinstance(uploaded, pd.DataFrame) and not uploaded.empty and "Support Level" in uploaded.columns:
@@ -3013,6 +3036,32 @@ with st.sidebar:
             st.rerun()
 
         divider()
+        with st.expander("⚡ Quick Select Campaign Lists", expanded=False):
+            st.caption("These buttons keep your existing geography and voter filters, but quickly set the Smart Follow-Up filters.")
+            qs_row1 = st.columns(2, gap="small")
+            with qs_row1[0]:
+                if st.button("Re-Knock List", use_container_width=True, key="qs_reknock"):
+                    apply_followup_preset("Re-Knock List")
+            with qs_row1[1]:
+                if st.button("Follow-Up List", use_container_width=True, key="qs_followup"):
+                    apply_followup_preset("Follow-Up List")
+
+            qs_row2 = st.columns(2, gap="small")
+            with qs_row2[0]:
+                if st.button("GOTV Supporters", use_container_width=True, key="qs_gotv"):
+                    apply_followup_preset("GOTV Supporters")
+            with qs_row2[1]:
+                if st.button("Undecided Persuasion", use_container_width=True, key="qs_undecided"):
+                    apply_followup_preset("Undecided Persuasion")
+
+            qs_row3 = st.columns(2, gap="small")
+            with qs_row3[0]:
+                if st.button("Yard Sign Follow-Up", use_container_width=True, key="qs_yardsign"):
+                    apply_followup_preset("Yard Sign Follow-Up")
+            with qs_row3[1]:
+                if st.button("Clear Quick Select", use_container_width=True, key="qs_clear"):
+                    apply_followup_preset("Clear")
+
         with st.expander("💾 Saved Universes", expanded=False):
             store_label = get_saved_universe_store_label()
             if store_label == "Cloudflare R2":
