@@ -1695,11 +1695,11 @@ def build_walk_sheet_tracking_excel_bytes(active_filters):
             "Gender": street_df["Sex"].apply(normalize_export_text),
             "Age": street_df["Age"].apply(normalize_export_text),
             "PA ID Number": street_df["PA ID Number"].apply(normalize_numeric_string),
-            "Contacted": street_df["Contacted"].apply(normalize_export_text) if "Contacted" in street_df.columns else "",
-            "Result": street_df["Result"].apply(normalize_export_text) if "Result" in street_df.columns else "",
-            "Support Level": street_df["Support Level"].apply(normalize_export_text) if "Support Level" in street_df.columns else "",
-            "Follow-Up": street_df["Follow-Up"].apply(normalize_export_text) if "Follow-Up" in street_df.columns else "",
-            "Notes": street_df["Walk Notes"].apply(normalize_export_text) if "Walk Notes" in street_df.columns else "",
+            "Contacted": street_df["Contacted"].apply(normalize_export_text) if "Contacted" in street_df.columns else pd.Series([""] * len(street_df)),
+            "Result": street_df["Result"].apply(normalize_export_text) if "Result" in street_df.columns else pd.Series([""] * len(street_df)),
+            "Support Level": street_df["Support Level"].apply(normalize_export_text) if "Support Level" in street_df.columns else pd.Series([""] * len(street_df)),
+            "Follow-Up": street_df["Follow-Up"].apply(normalize_export_text) if "Follow-Up" in street_df.columns else pd.Series([""] * len(street_df)),
+            "Notes": street_df.get("Walk Notes", pd.Series([""] * len(street_df))).apply(normalize_export_text),
         })
 
     output = BytesIO()
