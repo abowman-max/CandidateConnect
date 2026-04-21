@@ -1142,7 +1142,7 @@ def assign_turf_ids(df: pd.DataFrame, mode: str, target_size: int) -> pd.DataFra
 def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50):
     df = fetch_filtered_detail(active_filters).copy()
     if df.empty:
-        return b"", pd.DataFrame(columns=["Turf_ID", "Voters", "Households"])
+        return b""
 
     df["Name"] = df.apply(full_name_from_row, axis=1)
     df["Address1"] = df.apply(build_address_line1_row, axis=1)
@@ -1216,7 +1216,7 @@ def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50):
             if pdf_bytes:
                 zf.writestr(f"turf_walksheets/{safe_id}_walksheet.pdf", pdf_bytes)
     zip_buffer.seek(0)
-    return zip_buffer.getvalue(), summary_df
+    return zip_buffer.getvalue()
 
 
 def normalize_mb_perm_value(val) -> str:
