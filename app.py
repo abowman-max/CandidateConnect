@@ -1,7 +1,9 @@
 import json
+import os
 from pathlib import Path
 import base64
 import re
+import zipfile
 
 import altair as alt
 import duckdb
@@ -9,6 +11,7 @@ import pandas as pd
 import math
 import requests
 import streamlit as st
+import boto3
 
 from io import BytesIO
 from datetime import datetime
@@ -29,6 +32,8 @@ LOCAL_MANIFEST = LOCAL_ROOT / "dataset_manifest.json"
 CC_LOGO = Path("candidate_connect_logo.png")
 TSS_LOGO = Path("TSS_Logo_Transparent.png")
 SAVED_UNIVERSES_PATH = Path("saved_universes.json")
+SAVED_UNIVERSES_R2_KEY = "app_state/saved_universes.json"
+
 
 PARTY_COLOR_MAP = {"R": "#c62828", "D": "#1565c0", "O": "#2e7d32"}
 AGE_COLOR_RANGE = ["#7a1523","#9f2032","#b8454f","#c96a6c","#d88f87","#e8b8aa","#f2dbcf","#f7ebe5","#fbf5f2"]
@@ -122,7 +127,62 @@ def first_existing(columns, candidates):
 def ensure_parent(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
 
-def load_saved_universes() -> dict:
+def get_secret_value(*keys, default=None):
+    try:
+        for key in keys:
+            if key in st.secrets:
+                return st.secrets[key]
+    except Exception:
+        pass
+    for key in keys:
+        val = os.environ.get(key)
+        if val not in (None, ""):
+            return val
+    return default
+
+
+def get_saved_universe_store_info() -> dict:
+    account_id = get_secret_value("R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID")
+    access_key = get_secret_value("R2_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+    secret_key = get_secret_value("R2_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+    bucket = get_secret_value("R2_BUCKET", "SAVED_UNIVERSES_BUCKET", default=R2_BUCKET)
+    endpoint_url = get_secret_value("R2_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3")
+    region = get_secret_value("AWS_DEFAULT_REGION", default="auto")
+
+    if not endpoint_url and account_id:
+        endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
+
+    ready = all([endpoint_url, access_key, secret_key, bucket])
+    return {
+        "ready": bool(ready),
+        "endpoint_url": endpoint_url,
+        "access_key": access_key,
+        "secret_key": secret_key,
+        "bucket": bucket,
+        "region": region,
+    }
+
+
+def get_saved_universe_store_label() -> str:
+    info = get_saved_universe_store_info()
+    return "Cloudflare R2" if info.get("ready") else "Local fallback"
+
+
+def get_saved_universes_r2_client():
+    info = get_saved_universe_store_info()
+    if not info.get("ready"):
+        return None, info
+    client = boto3.client(
+        "s3",
+        endpoint_url=info["endpoint_url"],
+        aws_access_key_id=info["access_key"],
+        aws_secret_access_key=info["secret_key"],
+        region_name=info["region"],
+    )
+    return client, info
+
+
+def _load_saved_universes_local() -> dict:
     if not SAVED_UNIVERSES_PATH.exists():
         return {}
     try:
@@ -132,36 +192,32 @@ def load_saved_universes() -> dict:
         return {}
 
 
+def load_saved_universes() -> dict:
+    client, info = get_saved_universes_r2_client()
+    if client is None:
+        return _load_saved_universes_local()
+    try:
+        obj = client.get_object(Bucket=info["bucket"], Key=SAVED_UNIVERSES_R2_KEY)
+        data = json.loads(obj["Body"].read().decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def save_saved_universes(data: dict):
-    SAVED_UNIVERSES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    payload = json.dumps(data, indent=2).encode("utf-8")
+    client, info = get_saved_universes_r2_client()
+    if client is None:
+        SAVED_UNIVERSES_PATH.write_bytes(payload)
+        return
+    client.put_object(
+        Bucket=info["bucket"],
+        Key=SAVED_UNIVERSES_R2_KEY,
+        Body=payload,
+        ContentType="application/json",
+        CacheControl="no-store",
+    )
 
-
-def summarize_universe_filters(filters: dict) -> str:
-    if not filters:
-        return "No filters"
-    parts = []
-    for key, value in filters.items():
-        if key == "vote_history_index_range":
-            continue
-        if value in (None, "", [], {}, ()):
-            continue
-        if isinstance(value, (list, tuple)):
-            label = ", ".join(str(v) for v in value[:3])
-            if len(value) > 3:
-                label += " ..."
-            parts.append(f"{key}: {label}")
-        else:
-            parts.append(f"{key}: {value}")
-    return " | ".join(parts[:4]) if parts else "No filters"
-
-
-def universe_record_count(filters: dict, columns: list[str]) -> int:
-    if not columns:
-        return 0
-    con = get_conn()
-    where_sql, params = current_filter_clause(filters, columns)
-    row = con.execute(f"SELECT count(*) FROM voters {where_sql}", params).fetchone()
-    return int(row[0]) if row else 0
 
 def r2_public_url(key: str) -> str:
     return f"{R2_BASE}/{key}"
@@ -1009,6 +1065,142 @@ def build_mail_export(active_filters, householded=False):
 
 def dataframe_to_csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
+
+def sanitize_filename_part(value: str) -> str:
+    s = normalize_export_text(value)
+    s = re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("_")
+    return s or "blank"
+
+
+def choose_group_value(row, preferred_columns):
+    for col in preferred_columns:
+        if col in row and normalize_export_text(row.get(col, "")):
+            return normalize_export_text(row.get(col, ""))
+    return "(Blank)"
+
+
+def assign_turf_ids(df: pd.DataFrame, mode: str, target_size: int) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    out = df.copy()
+    out["_HouseholdKeySafe"] = out.get("_HouseholdKey", "").fillna("").astype(str).str.strip() if "_HouseholdKey" in out.columns else ""
+    if "Address1" not in out.columns:
+        out["Address1"] = out.apply(build_address_line1_row, axis=1)
+
+    if mode == "By Precinct":
+        group_vals = out.apply(lambda r: choose_group_value(r, ["Precinct"]), axis=1)
+        out["Turf_Group"] = group_vals
+        out["Turf_ID"] = out["Turf_Group"].apply(lambda v: f"Turf_{sanitize_filename_part(v)}")
+    elif mode == "By Municipality":
+        group_vals = out.apply(lambda r: choose_group_value(r, ["Municipality", "County"]), axis=1)
+        out["Turf_Group"] = group_vals
+        out["Turf_ID"] = out["Turf_Group"].apply(lambda v: f"Turf_{sanitize_filename_part(v)}")
+    else:
+        work = out.copy()
+        work["_DoorKey"] = work["_HouseholdKeySafe"]
+        blank_mask = work["_DoorKey"].eq("")
+        work.loc[blank_mask, "_DoorKey"] = work.loc[blank_mask, "Address1"].fillna("").astype(str)
+        household_sizes = work.groupby("_DoorKey", dropna=False).size().reset_index(name="_VoterCount")
+        household_sizes["_DoorCount"] = 1
+        household_sizes["_StreetSort"] = household_sizes["_DoorKey"].astype(str)
+        household_sizes = household_sizes.sort_values(["_StreetSort", "_DoorKey"], kind="stable").reset_index(drop=True)
+
+        turf_ids = []
+        turf_num = 1
+        current_size = 0
+        for _, hh in household_sizes.iterrows():
+            increment = int(hh["_DoorCount"] if mode == "Target Doors" else hh["_VoterCount"])
+            if current_size > 0 and current_size + increment > int(target_size):
+                turf_num += 1
+                current_size = 0
+            turf_ids.append(f"Turf_{turf_num:03d}")
+            current_size += increment
+        household_sizes["Turf_ID"] = turf_ids
+        out = out.merge(household_sizes[["_DoorKey", "Turf_ID"]], on="_DoorKey", how="left")
+        out["Turf_Group"] = out["Turf_ID"]
+
+    summary = (
+        out.groupby("Turf_ID", dropna=False)
+        .agg(
+            Voters=("Turf_ID", "size"),
+            Households=("_HouseholdKeySafe", lambda s: s.replace("", pd.NA).dropna().nunique() + (s.eq("").sum())),
+            Counties=("County", lambda s: ", ".join(sorted({normalize_export_text(v) for v in s if normalize_export_text(v)})[:4])),
+            Municipalities=("Municipality", lambda s: ", ".join(sorted({normalize_export_text(v) for v in s if normalize_export_text(v)})[:4])),
+            Precincts=("Precinct", lambda s: ", ".join(sorted({normalize_export_text(v) for v in s if normalize_export_text(v)})[:4])),
+        )
+        .reset_index()
+        .sort_values("Turf_ID")
+        .reset_index(drop=True)
+    )
+    out = out.merge(summary[["Turf_ID", "Voters", "Households"]], on="Turf_ID", how="left")
+    out = out.rename(columns={"Voters": "Turf_Voters", "Households": "Turf_Households"})
+    return out
+
+
+def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50):
+    df = fetch_filtered_detail(active_filters).copy()
+    if df.empty:
+        return b"", pd.DataFrame(columns=["Turf_ID", "Voters", "Households"])
+
+    df["Name"] = df.apply(full_name_from_row, axis=1)
+    df["Address1"] = df.apply(build_address_line1_row, axis=1)
+    city_col = first_existing_detail(df.columns.tolist(), ["MailingCity", "Mailing City", "City", "MailCity"])
+    state_col = first_existing_detail(df.columns.tolist(), ["MailingState", "Mailing State", "State", "MailState"])
+    zip_col = first_existing_detail(df.columns.tolist(), ["MailingZip", "Mailing Zip", "ZIP", "Zip", "ZipCode", "ZIPCODE", "MailZip"])
+    if city_col and "City" not in df.columns:
+        df["City"] = df[city_col]
+    if state_col and "State" not in df.columns:
+        df["State"] = df[state_col]
+    if zip_col and "Zip" not in df.columns:
+        df["Zip"] = df[zip_col]
+
+    pa_id_col = first_existing_detail(df.columns.tolist(), ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "Voter ID", "VoterID"])
+    if pa_id_col and pa_id_col != "PA_ID_Number":
+        df["PA_ID_Number"] = df[pa_id_col]
+    elif "PA_ID_Number" not in df.columns:
+        df["PA_ID_Number"] = ""
+
+    df = assign_turf_ids(df, mode=mode, target_size=target_size)
+
+    export_cols = [c for c in [
+        "Turf_ID", "Name", "PA_ID_Number", "Address1", "City", "State", "Zip",
+        "County", "Municipality", "Precinct", "Party", "Gender", "Age", "Mobile", "Landline"
+    ] if c in df.columns]
+
+    export_df = df[export_cols].copy()
+    export_df = normalize_filtered_export_dataframe(export_df)
+    if "Zip" in export_df.columns:
+        export_df["Zip"] = export_df["Zip"].apply(clean_zip_value)
+    if "Mobile" in export_df.columns:
+        export_df["Mobile"] = export_df["Mobile"].apply(clean_phone_value)
+    if "Landline" in export_df.columns:
+        export_df["Landline"] = export_df["Landline"].apply(clean_phone_value)
+
+    summary_df = (
+        df.groupby("Turf_ID", dropna=False)
+        .agg(
+            Voters=("Turf_ID", "size"),
+            Households=("_HouseholdKeySafe", lambda s: s.replace("", pd.NA).dropna().nunique() + (s.eq("").sum())),
+            Counties=("County", lambda s: ", ".join(sorted({normalize_export_text(v) for v in s if normalize_export_text(v)})[:4])),
+            Municipalities=("Municipality", lambda s: ", ".join(sorted({normalize_export_text(v) for v in s if normalize_export_text(v)})[:4])),
+            Precincts=("Precinct", lambda s: ", ".join(sorted({normalize_export_text(v) for v in s if normalize_export_text(v)})[:4])),
+        )
+        .reset_index()
+        .sort_values("Turf_ID")
+        .reset_index(drop=True)
+    )
+
+    zip_buffer = BytesIO()
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("turf_summary.csv", summary_df.to_csv(index=False))
+        zf.writestr("README.txt", "Candidate Connect Turf Packets\n\nThis zip contains one CSV per turf plus turf_summary.csv.\n")
+        for turf_id, turf_df in export_df.groupby("Turf_ID", sort=True, dropna=False):
+            safe_id = sanitize_filename_part(str(turf_id))
+            zf.writestr(f"turf_packets/{safe_id}.csv", turf_df.drop(columns=["Turf_ID"], errors="ignore").to_csv(index=False))
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue(), summary_df
 
 
 def normalize_mb_perm_value(val) -> str:
@@ -1863,6 +2055,7 @@ with st.sidebar:
     st.header("Filters")
     st.markdown('<div class="sidebar-note">This version uses public HTTPS downloads from Cloudflare R2 instead of boto3. Make sure your R2 bucket is Public Read enabled.</div>', unsafe_allow_html=True)
 
+
     if not st.session_state.data_loaded:
         if st.button("Load Voter Data", use_container_width=True, type="primary"):
             with st.spinner("Downloading manifest and opening R2 index shards..."):
@@ -1988,6 +2181,70 @@ with st.sidebar:
             st.session_state.filters_applied = True
             st.rerun()
 
+        divider()
+        with st.expander("💾 Saved Universes", expanded=False):
+            store_label = get_saved_universe_store_label()
+            if store_label == "Cloudflare R2":
+                st.caption("Saved universes are stored in persistent Cloudflare R2 storage.")
+            else:
+                st.caption("Saved universes are using local fallback storage. Add R2 write secrets to keep them across restarts.")
+
+            saved_universes = load_saved_universes()
+            st.session_state["saved_universes"] = saved_universes
+            universe_names = list(saved_universes.keys())
+
+            if universe_names:
+                selected_sidebar_universe = st.selectbox(
+                    "Saved Universes",
+                    universe_names,
+                    key="sidebar_saved_universe_name",
+                )
+                universe_info = saved_universes[selected_sidebar_universe]
+                st.caption(
+                    f"Saved: {universe_info.get('saved_at', '')} | Count: {int(universe_info.get('count', 0)):,}"
+                )
+                st.caption(universe_info.get("summary", "No filters"))
+                load_col, delete_col = st.columns(2, gap="small")
+                with load_col:
+                    if st.button("Load Universe", use_container_width=True, key="load_sidebar_universe"):
+                        st.session_state.active_filters = universe_info.get("filters", {})
+                        st.session_state.filters_applied = False
+                        st.success(f"Loaded universe: {selected_sidebar_universe}")
+                        st.rerun()
+                with delete_col:
+                    if st.button("Delete Universe", use_container_width=True, key="delete_sidebar_universe"):
+                        saved_universes.pop(selected_sidebar_universe, None)
+                        save_saved_universes(saved_universes)
+                        st.session_state["saved_universes"] = saved_universes
+                        st.success(f"Deleted universe: {selected_sidebar_universe}")
+                        st.rerun()
+            else:
+                st.caption("No saved universes yet.")
+
+            save_name = st.text_input(
+                "Save current filters as",
+                key="save_universe_name_sidebar",
+                placeholder="Example: GOTV Democrats Week 1",
+            )
+            if st.button("Save Current Universe", use_container_width=True, key="save_sidebar_universe"):
+                universe_name = save_name.strip()
+                if universe_name:
+                    current_filters = st.session_state.get("active_filters", {})
+                    saved_universes = load_saved_universes()
+                    saved_universes[universe_name] = {
+                        "filters": current_filters,
+                        "saved_at": datetime.now().strftime("%Y-%m-%d %I:%M %p"),
+                        "count": int(query_metrics(current_filters, st.session_state.get("columns", [])).get("voters", 0)),
+                        "summary": summarize_universe_filters(current_filters),
+                    }
+                    save_saved_universes(saved_universes)
+                    st.session_state["saved_universes"] = saved_universes
+                    st.success(f"Saved universe: {universe_name}")
+                    st.rerun()
+                else:
+                    st.warning("Enter a universe name first.")
+
+
 if not st.session_state.data_loaded:
     zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Landlines", "0"), ("Mobiles", "0"), ("Unique Counties", "0"), ("Unique Precincts", "0")]
     metric_cols = st.columns(7, gap="small")
@@ -2071,9 +2328,9 @@ st.markdown('</div>', unsafe_allow_html=True)
 divider()
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.markdown('<div class="small-header">Output Center</div>', unsafe_allow_html=True)
-st.caption("Use tabs below to keep exports, reports, and saved universes organized.")
+st.caption("Use tabs below to keep exports, reports, and turf tools organized.")
 
-output_tabs = st.tabs(["Exports", "Reports", "Saved Universes"])
+output_tabs = st.tabs(["Exports", "Reports", "Turf Builder"])
 
 with output_tabs[0]:
     st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
@@ -2218,58 +2475,5 @@ with output_tabs[1]:
                     use_container_width=True,
                 )
 
-with output_tabs[2]:
-    st.markdown('<div class="small-header">Saved Universes</div>', unsafe_allow_html=True)
-    st.caption("Save your current filter setup so you can load it again without rebuilding it manually.")
-
-    save_name = st.text_input("Universe Name", key="save_universe_name", placeholder="Example: GOTV Democrats Week 1")
-    save_cols = st.columns([1, 1, 1], gap="medium")
-
-    with save_cols[0]:
-        if st.button("Save Current Universe", use_container_width=True):
-            universe_name = save_name.strip()
-            if universe_name:
-                saved = load_saved_universes()
-                saved[universe_name] = {
-                    "filters": active,
-                    "saved_at": datetime.now().strftime("%Y-%m-%d %I:%M %p"),
-                    "count": universe_record_count(active, columns),
-                    "summary": summarize_universe_filters(active),
-                }
-                save_saved_universes(saved)
-                st.session_state["saved_universes"] = saved
-                st.success(f"Saved universe: {universe_name}")
-            else:
-                st.warning("Enter a universe name first.")
-
-    saved_universes = st.session_state.get("saved_universes", {})
-    universe_names = list(saved_universes.keys())
-
-    if universe_names:
-        selected_universe = st.selectbox("Saved Universes", universe_names, key="selected_universe_name")
-        universe_info = saved_universes[selected_universe]
-        st.markdown(
-            f"**Saved:** {universe_info.get('saved_at', '')}  \
-**Count:** {int(universe_info.get('count', 0)):,}  \
-**Filters:** {universe_info.get('summary', 'No filters')}"
-        )
-
-        action_cols = st.columns(2, gap="medium")
-        with action_cols[0]:
-            if st.button("Load Selected Universe", use_container_width=True):
-                st.session_state.active_filters = universe_info.get("filters", {})
-                st.session_state.filters_applied = True
-                st.success(f"Loaded universe: {selected_universe}")
-                st.rerun()
-        with action_cols[1]:
-            if st.button("Delete Selected Universe", use_container_width=True):
-                saved = load_saved_universes()
-                saved.pop(selected_universe, None)
-                save_saved_universes(saved)
-                st.session_state["saved_universes"] = saved
-                st.success(f"Deleted universe: {selected_universe}")
-                st.rerun()
-    else:
-        st.caption("No saved universes yet.")
 
 st.markdown('</div>', unsafe_allow_html=True)
