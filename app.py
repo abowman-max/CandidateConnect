@@ -1643,9 +1643,14 @@ def merge_uploaded_walk_results_into_detail_df(df: pd.DataFrame) -> pd.DataFrame
 
     merged["PA ID Number"] = merged[pa_id_col].apply(normalize_numeric_string)
     merge_cols = ["PA ID Number", "Contacted", "Result", "Support Level", "Follow-Up", "Notes"]
-    merged = merged.merge(uploaded[merge_cols], on="PA ID Number", how="left")
-    merged = merged.rename(columns={"Notes": "Walk Notes"})
+    uploaded_for_merge = uploaded[merge_cols].rename(columns={"Notes": "_UploadedWalkNotes"})
+    merged = merged.merge(uploaded_for_merge, on="PA ID Number", how="left")
+    merged["Walk Notes"] = merged["_UploadedWalkNotes"].fillna("").astype(str) if "_UploadedWalkNotes" in merged.columns else ""
+    if "_UploadedWalkNotes" in merged.columns:
+        merged = merged.drop(columns=["_UploadedWalkNotes"])
     for field in ["Contacted", "Result", "Support Level", "Follow-Up", "Walk Notes"]:
+        if field not in merged.columns:
+            merged[field] = ""
         merged[field] = merged[field].fillna("").astype(str)
     return merged
 
