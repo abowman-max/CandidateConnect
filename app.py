@@ -1574,13 +1574,195 @@ def apply_uploaded_street_result_filters(street_df: pd.DataFrame) -> pd.DataFram
             out = out[out[field].astype(str).str.strip() == ""]
     return out
 
+
+def get_walk_sheet_tracking_template_csv_bytes():
+    template_df = pd.DataFrame(columns=["PA ID Number", "Contacted", "Result", "Support Level", "Follow-Up", "Notes"])
+    return template_df.to_csv(index=False).encode("utf-8")
+
+def normalize_walk_result_value(val):
+    return normalize_export_text(val).title()
+
+def standardize_uploaded_walk_results(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["PA ID Number", "Contacted", "Result", "Support Level", "Follow-Up", "Notes"])
+
+    pa_id_col = _find_uploaded_results_column(
+        df.columns.tolist(),
+        ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "State Voter ID", "Voter ID", "VoterID"]
+    )
+    if pa_id_col is None:
+        return pd.DataFrame(columns=["PA ID Number", "Contacted", "Result", "Support Level", "Follow-Up", "Notes"])
+
+    out = pd.DataFrame()
+    out["PA ID Number"] = df[pa_id_col].apply(normalize_numeric_string)
+
+    field_map = {
+        "Contacted": ["Contacted", "Contact", "C"],
+        "Result": ["Result", "Outcome", "Canvass Result"],
+        "Support Level": ["Support Level", "Support", "SupportLevel"],
+        "Follow-Up": ["Follow-Up", "Follow Up", "Followup", "F"],
+        "Notes": ["Notes", "Note", "Comments", "Comment"],
+    }
+
+    for field, candidates in field_map.items():
+        col = _find_uploaded_results_column(df.columns.tolist(), candidates)
+        if col is None:
+            out[field] = ""
+        elif field in {"Contacted", "Follow-Up"}:
+            out[field] = df[col].apply(normalize_tracking_mark)
+        elif field == "Notes":
+            out[field] = df[col].apply(normalize_export_text)
+        else:
+            out[field] = df[col].apply(normalize_walk_result_value)
+
+    out = out[out["PA ID Number"].astype(str).str.strip() != ""].copy()
+    out = out.drop_duplicates(subset=["PA ID Number"], keep="last").reset_index(drop=True)
+    return out
+
+def merge_uploaded_walk_results_into_detail_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    merged = df.copy()
+    uploaded = st.session_state.get("walk_results_df")
+    if not isinstance(uploaded, pd.DataFrame) or uploaded.empty:
+        for field in ["Contacted", "Result", "Support Level", "Follow-Up", "Walk Notes"]:
+            if field not in merged.columns:
+                merged[field] = ""
+        return merged
+
+    pa_id_col = first_existing_detail(
+        merged.columns.tolist(),
+        ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "State Voter ID", "Voter ID", "VoterID"]
+    )
+    if pa_id_col is None:
+        for field in ["Contacted", "Result", "Support Level", "Follow-Up", "Walk Notes"]:
+            if field not in merged.columns:
+                merged[field] = ""
+        return merged
+
+    merged["PA ID Number"] = merged[pa_id_col].apply(normalize_numeric_string)
+    merge_cols = ["PA ID Number", "Contacted", "Result", "Support Level", "Follow-Up", "Notes"]
+    merged = merged.merge(uploaded[merge_cols], on="PA ID Number", how="left")
+    merged = merged.rename(columns={"Notes": "Walk Notes"})
+    for field in ["Contacted", "Result", "Support Level", "Follow-Up", "Walk Notes"]:
+        merged[field] = merged[field].fillna("").astype(str)
+    return merged
+
+def apply_uploaded_walk_result_filters(street_df: pd.DataFrame) -> pd.DataFrame:
+    if street_df is None or street_df.empty:
+        return street_df
+
+    filters = st.session_state.get("walk_results_filters", {}) or {}
+    out = street_df.copy()
+
+    for field in ["Contacted", "Follow-Up"]:
+        mode = normalize_export_text(filters.get(field, "All"))
+        if mode == "Marked":
+            out = out[out[field].astype(str).str.strip() != ""]
+        elif mode == "Unmarked":
+            out = out[out[field].astype(str).str.strip() == ""]
+
+    not_home_mode = normalize_export_text(filters.get("Not Home", "All"))
+    result_upper = out["Result"].astype(str).str.upper().str.replace(" ", "", regex=False)
+    if not_home_mode == "Marked":
+        out = out[result_upper.isin(["NOTHOME", "NH"])]
+    elif not_home_mode == "Unmarked":
+        out = out[~result_upper.isin(["NOTHOME", "NH"])]
+
+    support_level = normalize_export_text(filters.get("Support Level", "All"))
+    if support_level and support_level != "All":
+        out = out[out["Support Level"].astype(str).str.strip().str.casefold() == support_level.casefold()]
+
+    return out
+
+def build_walk_sheet_tracking_excel_bytes(active_filters):
+    street_df = build_street_list_dataframe(active_filters).copy()
+    street_df = apply_uploaded_walk_result_filters(street_df)
+    if street_df.empty:
+        export_df = pd.DataFrame(columns=[
+            "Precinct", "Street", "Address", "Name", "Phone", "Party", "Gender", "Age",
+            "PA ID Number", "Contacted", "Result", "Support Level", "Follow-Up", "Notes"
+        ])
+    else:
+        export_df = pd.DataFrame({
+            "Precinct": street_df["Precinct"].apply(normalize_export_text),
+            "Street": street_df["StreetGroup"].apply(normalize_export_text),
+            "Address": street_df["AddressLine"].apply(normalize_export_text),
+            "Name": street_df["FullName"].apply(normalize_export_text),
+            "Phone": street_df["Phone"].apply(normalize_export_text),
+            "Party": street_df["Party"].apply(normalize_export_text),
+            "Gender": street_df["Sex"].apply(normalize_export_text),
+            "Age": street_df["Age"].apply(normalize_export_text),
+            "PA ID Number": street_df["PA ID Number"].apply(normalize_numeric_string),
+            "Contacted": street_df["Contacted"].apply(normalize_export_text) if "Contacted" in street_df.columns else "",
+            "Result": street_df["Result"].apply(normalize_export_text) if "Result" in street_df.columns else "",
+            "Support Level": street_df["Support Level"].apply(normalize_export_text) if "Support Level" in street_df.columns else "",
+            "Follow-Up": street_df["Follow-Up"].apply(normalize_export_text) if "Follow-Up" in street_df.columns else "",
+            "Notes": street_df["Walk Notes"].apply(normalize_export_text) if "Walk Notes" in street_df.columns else "",
+        })
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        export_df.to_excel(writer, sheet_name="Walk Sheet Tracking", index=False, startrow=4)
+        workbook = writer.book
+        worksheet = writer.sheets["Walk Sheet Tracking"]
+
+        title_font = Font(bold=True, size=14, color="7A1523")
+        sub_font = Font(italic=True, size=10, color="555555")
+        header_fill = PatternFill(fill_type="solid", fgColor="7A1523")
+        header_font = Font(bold=True, color="FFFFFF")
+        thin_side = Side(style="thin", color="C9B0B4")
+        box_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+        box_fill = PatternFill(fill_type="solid", fgColor="F8EDED")
+        note_fill = PatternFill(fill_type="solid", fgColor="FFF9F9")
+        center_align = Alignment(horizontal="center", vertical="center")
+        wrap_align = Alignment(vertical="top", wrap_text=True)
+
+        worksheet["A1"] = "Candidate Connect Walk Sheet Tracking Sheet"
+        worksheet["A1"].font = title_font
+        worksheet["A2"] = f"Generated: {datetime.now().strftime('%m/%d/%Y %I:%M %p')}"
+        worksheet["A2"].font = sub_font
+        worksheet["A3"] = "Enter X in Contacted or Follow-Up, type Not Home or another result in Result, and fill Support Level / Notes as needed."
+        worksheet["A3"].font = sub_font
+
+        for cell in worksheet[5]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center_align
+
+        width_map = {
+            "A": 14, "B": 22, "C": 16, "D": 28, "E": 18, "F": 8, "G": 9, "H": 8,
+            "I": 15, "J": 11, "K": 16, "L": 16, "M": 11, "N": 28
+        }
+        for col_letter, width in width_map.items():
+            worksheet.column_dimensions[col_letter].width = width
+
+        max_row = worksheet.max_row
+        for row in range(6, max_row + 1):
+            for col_letter in ["J", "M"]:
+                cell = worksheet[f"{col_letter}{row}"]
+                cell.border = box_border
+                cell.fill = box_fill
+                cell.alignment = center_align
+            for col_letter in ["K", "L", "N"]:
+                cell = worksheet[f"{col_letter}{row}"]
+                cell.border = box_border
+                cell.fill = note_fill
+                cell.alignment = wrap_align
+
+        worksheet.freeze_panes = "A6"
+
+    return output.getvalue()
+
 def build_street_list_dataframe(active_filters):
     df = fetch_filtered_detail(active_filters).copy()
     df = merge_uploaded_street_results_into_detail_df(df)
+    df = merge_uploaded_walk_results_into_detail_df(df)
     if df.empty:
         return pd.DataFrame(columns=[
             "Precinct","StreetGroup","AddressLine","FullName","Phone","Party","Sex","Age","PA ID Number",
-            "F","A","U","NH","Yard Sign","Notes","MB_Perm","HouseNumSort","AptSort"
+            "F","A","U","NH","Yard Sign","Notes","Contacted","Result","Support Level","Follow-Up","Walk Notes","MB_Perm","HouseNumSort","AptSort"
         ])
 
     precinct_col = first_existing_detail(df.columns.tolist(), ["Precinct"])
@@ -1613,6 +1795,11 @@ def build_street_list_dataframe(active_filters):
     out["NH"] = df["NH"].apply(normalize_tracking_mark) if "NH" in df.columns else ""
     out["Yard Sign"] = df["Yard Sign"].apply(normalize_tracking_mark) if "Yard Sign" in df.columns else ""
     out["Notes"] = df["Notes"].apply(normalize_export_text) if "Notes" in df.columns else ""
+    out["Contacted"] = df["Contacted"].apply(normalize_tracking_mark) if "Contacted" in df.columns else ""
+    out["Result"] = df["Result"].apply(normalize_walk_result_value) if "Result" in df.columns else ""
+    out["Support Level"] = df["Support Level"].apply(normalize_export_text) if "Support Level" in df.columns else ""
+    out["Follow-Up"] = df["Follow-Up"].apply(normalize_tracking_mark) if "Follow-Up" in df.columns else ""
+    out["Walk Notes"] = df["Walk Notes"].apply(normalize_export_text) if "Walk Notes" in df.columns else ""
     out["MB_Perm"] = df[mb_perm_col].apply(normalize_mb_perm_value) if mb_perm_col else ""
     out["HouseNumSort"] = house_vals.apply(parse_house_number)
     out["AptSort"] = apt_vals.apply(parse_apartment_sort)
@@ -1948,6 +2135,7 @@ def generate_street_list_pdf_bytes(active_filters):
 
 def _make_walk_sheet_groups(active_filters):
     street_df = build_street_list_dataframe(active_filters).copy()
+    street_df = apply_uploaded_walk_result_filters(street_df)
     if street_df.empty:
         return street_df, []
 
@@ -2077,8 +2265,20 @@ def generate_walk_sheet_pdf_bytes(active_filters):
             row_y = y
             checkbox_y = row_y - 11
             c.setStrokeColor(REPORT_GRID)
-            for x in (28, 47, 66):
+            checkbox_positions = {"C": 28, "N": 47, "F": 66}
+            for x in checkbox_positions.values():
                 c.rect(x, checkbox_y, 10, 10, fill=0, stroke=1)
+
+            if normalize_export_text(row.get("Contacted", "")):
+                c.setFont("Helvetica-Bold", 8)
+                c.drawCentredString(checkbox_positions["C"] + 5, row_y - 3, "X")
+            result_key = normalize_export_text(row.get("Result", "")).upper().replace(" ", "")
+            if result_key in {"NOTHOME", "NH"}:
+                c.setFont("Helvetica-Bold", 8)
+                c.drawCentredString(checkbox_positions["N"] + 5, row_y - 3, "X")
+            if normalize_export_text(row.get("Follow-Up", "")):
+                c.setFont("Helvetica-Bold", 8)
+                c.drawCentredString(checkbox_positions["F"] + 5, row_y - 3, "X")
 
             c.setFillColor(colors.black)
             c.setFont("Helvetica-Bold", 10)
@@ -2112,10 +2312,11 @@ def generate_walk_sheet_pdf_bytes(active_filters):
 
 def build_street_list_dataframe_from_detail_df(df: pd.DataFrame):
     df = merge_uploaded_street_results_into_detail_df(df)
+    df = merge_uploaded_walk_results_into_detail_df(df)
     if df is None or df.empty:
         return pd.DataFrame(columns=[
             "Precinct","StreetGroup","AddressLine","FullName","Phone","Party","Sex","Age","PA ID Number",
-            "F","A","U","NH","Yard Sign","Notes","MB_Perm","HouseNumSort","AptSort"
+            "F","A","U","NH","Yard Sign","Notes","Contacted","Result","Support Level","Follow-Up","Walk Notes","MB_Perm","HouseNumSort","AptSort"
         ])
 
     precinct_col = first_existing_detail(df.columns.tolist(), ["Precinct"])
@@ -2148,6 +2349,11 @@ def build_street_list_dataframe_from_detail_df(df: pd.DataFrame):
     out["NH"] = df["NH"].apply(normalize_tracking_mark) if "NH" in df.columns else ""
     out["Yard Sign"] = df["Yard Sign"].apply(normalize_tracking_mark) if "Yard Sign" in df.columns else ""
     out["Notes"] = df["Notes"].apply(normalize_export_text) if "Notes" in df.columns else ""
+    out["Contacted"] = df["Contacted"].apply(normalize_tracking_mark) if "Contacted" in df.columns else ""
+    out["Result"] = df["Result"].apply(normalize_walk_result_value) if "Result" in df.columns else ""
+    out["Support Level"] = df["Support Level"].apply(normalize_export_text) if "Support Level" in df.columns else ""
+    out["Follow-Up"] = df["Follow-Up"].apply(normalize_tracking_mark) if "Follow-Up" in df.columns else ""
+    out["Walk Notes"] = df["Walk Notes"].apply(normalize_export_text) if "Walk Notes" in df.columns else ""
     out["MB_Perm"] = df[mb_perm_col].apply(normalize_mb_perm_value) if mb_perm_col else ""
     out["HouseNumSort"] = house_vals.apply(parse_house_number)
     out["AptSort"] = apt_vals.apply(parse_apartment_sort)
@@ -2455,6 +2661,10 @@ if "street_results_df" not in st.session_state:
     st.session_state.street_results_df = pd.DataFrame(columns=["PA ID Number", "F", "A", "U", "NH", "Yard Sign", "Notes"])
 if "street_results_filters" not in st.session_state:
     st.session_state.street_results_filters = {}
+if "walk_results_df" not in st.session_state:
+    st.session_state.walk_results_df = pd.DataFrame(columns=["PA ID Number", "Contacted", "Result", "Support Level", "Follow-Up", "Notes"])
+if "walk_results_filters" not in st.session_state:
+    st.session_state.walk_results_filters = {}
 
 with st.sidebar:
     st.header("Filters")
@@ -2918,7 +3128,123 @@ with output_tabs[1]:
                 )
 
     with report_sections[2]:
-        st.caption("Builds a volunteer-friendly walk sheet with aligned C / N / F checkboxes and notes lines.")
+        st.caption("Builds a volunteer-friendly walk sheet and supports a tracking workbook that can be uploaded back by PA ID.")
+        upload_cols = st.columns([1, 1.15, 1], gap="medium")
+        with upload_cols[0]:
+            st.download_button(
+                "Download Walk Sheet Tracking Template",
+                data=get_walk_sheet_tracking_template_csv_bytes(),
+                file_name="candidate_connect_walk_sheet_tracking_template.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+            if st.button("Prepare Walk Sheet Excel Tracking Sheet", use_container_width=True):
+                with st.spinner("Building Walk Sheet Excel tracking sheet from filtered detail shards..."):
+                    excel_bytes = build_walk_sheet_tracking_excel_bytes(active)
+                    st.session_state["walk_sheet_tracking_excel_bytes"] = excel_bytes
+            if "walk_sheet_tracking_excel_bytes" in st.session_state and st.session_state["walk_sheet_tracking_excel_bytes"]:
+                st.download_button(
+                    "Download Walk Sheet Excel Tracking Sheet",
+                    data=st.session_state["walk_sheet_tracking_excel_bytes"],
+                    file_name="candidate_connect_walk_sheet_tracking.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+        with upload_cols[1]:
+            uploaded_walk_file = st.file_uploader(
+                "Upload Walk Sheet Results",
+                type=["csv", "xlsx"],
+                key="walk_results_upload",
+                help="Upload a completed Walk Sheet tracking workbook or CSV using PA ID Number plus Contacted, Result, Support Level, Follow-Up, and Notes columns.",
+            )
+            if uploaded_walk_file is not None:
+                upload_sig = f"{uploaded_walk_file.name}:{getattr(uploaded_walk_file, 'size', 0)}"
+                if st.session_state.get("walk_results_upload_sig") != upload_sig:
+                    try:
+                        if str(uploaded_walk_file.name).lower().endswith(".xlsx"):
+                            raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str).fillna("")
+                            normalized_cols = [re.sub(r"[^a-z0-9]+", "", str(c).strip().lower()) for c in raw_upload_df.columns]
+                            if "paidnumber" not in normalized_cols:
+                                try:
+                                    raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str, header=4).fillna("")
+                                except Exception:
+                                    uploaded_walk_file.seek(0)
+                                    raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str).fillna("")
+                            uploaded_walk_file.seek(0)
+                        else:
+                            raw_upload_df = pd.read_csv(uploaded_walk_file, dtype=str).fillna("")
+                        standardized_upload_df = standardize_uploaded_walk_results(raw_upload_df)
+                        if standardized_upload_df.empty:
+                            st.warning("No usable PA ID Number column was found in the uploaded Walk Sheet file.")
+                        else:
+                            st.session_state["walk_results_df"] = standardized_upload_df
+                            st.session_state["walk_results_upload_sig"] = upload_sig
+                            st.session_state["walk_results_upload_name"] = uploaded_walk_file.name
+                            st.success(f"Loaded {len(standardized_upload_df):,} walk-result rows.")
+                    except Exception as exc:
+                        st.error(f"Could not read the Walk Sheet results file: {exc}")
+        with upload_cols[2]:
+            loaded_walk_results = st.session_state.get("walk_results_df")
+            if isinstance(loaded_walk_results, pd.DataFrame) and not loaded_walk_results.empty:
+                st.caption(f"Loaded rows: {len(loaded_walk_results):,}")
+                st.caption(f"Source: {st.session_state.get('walk_results_upload_name', 'uploaded file')}")
+                if st.button("Clear Uploaded Walk Sheet Results", use_container_width=True):
+                    st.session_state["walk_results_df"] = pd.DataFrame(columns=["PA ID Number", "Contacted", "Result", "Support Level", "Follow-Up", "Notes"])
+                    st.session_state["walk_results_filters"] = {}
+                    st.session_state.pop("walk_results_upload_sig", None)
+                    st.session_state.pop("walk_results_upload_name", None)
+                    st.rerun()
+            else:
+                st.caption("No Walk Sheet results uploaded yet.")
+
+        loaded_walk_results = st.session_state.get("walk_results_df")
+        if isinstance(loaded_walk_results, pd.DataFrame) and not loaded_walk_results.empty:
+            st.caption("These tracking filters apply only to the Walk Sheet PDF, so you can rebuild volunteer re-knock or follow-up sheets without changing the dashboard counts.")
+            filter_defaults = st.session_state.get("walk_results_filters", {}) or {}
+            walk_filter_cols = st.columns(4, gap="small")
+            with walk_filter_cols[0]:
+                contacted_filter = st.selectbox(
+                    "Contacted",
+                    ["All", "Marked", "Unmarked"],
+                    index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Contacted", "All")),
+                    key="walk_results_filter_contacted",
+                )
+            with walk_filter_cols[1]:
+                not_home_filter = st.selectbox(
+                    "Not Home",
+                    ["All", "Marked", "Unmarked"],
+                    index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Not Home", "All")),
+                    key="walk_results_filter_not_home",
+                )
+            with walk_filter_cols[2]:
+                followup_filter = st.selectbox(
+                    "Follow-Up",
+                    ["All", "Marked", "Unmarked"],
+                    index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Follow-Up", "All")),
+                    key="walk_results_filter_followup",
+                )
+            support_options = ["All"] + sorted(
+                {normalize_export_text(v) for v in loaded_walk_results["Support Level"].tolist() if normalize_export_text(v)}
+            )
+            default_support = filter_defaults.get("Support Level", "All")
+            if default_support not in support_options:
+                default_support = "All"
+            with walk_filter_cols[3]:
+                support_filter = st.selectbox(
+                    "Support Level",
+                    support_options,
+                    index=support_options.index(default_support),
+                    key="walk_results_filter_support",
+                )
+            st.session_state["walk_results_filters"] = {
+                "Contacted": contacted_filter,
+                "Not Home": not_home_filter,
+                "Follow-Up": followup_filter,
+                "Support Level": support_filter,
+            }
+        else:
+            st.caption("Download the Walk Sheet Excel tracking sheet if you want a ready-to-use file with Contacted, Result, Support Level, Follow-Up, and Notes columns, then upload it back after results are entered.")
+
         walk_cols = st.columns(2, gap="medium")
         with walk_cols[0]:
             if st.button("Prepare Walk Sheet PDF", use_container_width=True):
