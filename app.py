@@ -1072,6 +1072,13 @@ def sanitize_filename_part(value: str) -> str:
     return s or "blank"
 
 
+
+def turf_packet_display_name(packet_label: str, turf_id: str) -> str:
+    label = normalize_export_text(packet_label)
+    turf = normalize_export_text(turf_id) or "Turf"
+    return f"{label} - {turf}" if label else turf
+
+
 def choose_group_value(row, preferred_columns):
     for col in preferred_columns:
         if col in row and normalize_export_text(row.get(col, "")):
@@ -1139,10 +1146,14 @@ def assign_turf_ids(df: pd.DataFrame, mode: str, target_size: int) -> pd.DataFra
     return out
 
 
-def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50):
+def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50, volunteer_name: str = "", packet_label: str = "", packet_date: str = ""):
     df = fetch_filtered_detail(active_filters).copy()
     if df.empty:
         return b""
+
+    volunteer_name = normalize_name_value(volunteer_name)
+    packet_label = collapse_spaces(packet_label)
+    packet_date = normalize_export_text(packet_date) or datetime.now().strftime("%Y-%m-%d")
 
     df["Name"] = df.apply(full_name_from_row, axis=1)
     df["Address1"] = df.apply(build_address_line1_row, axis=1)
@@ -1178,6 +1189,10 @@ def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50):
     if "Landline" in export_df.columns:
         export_df["Landline"] = export_df["Landline"].apply(clean_phone_value)
 
+    export_df.insert(1, "Packet_Label", packet_label)
+    export_df.insert(2, "Volunteer_Name", volunteer_name)
+    export_df.insert(3, "Packet_Date", packet_date)
+
     summary_df = (
         df.groupby("Turf_ID", dropna=False)
         .agg(
@@ -1191,6 +1206,9 @@ def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50):
         .sort_values("Turf_ID")
         .reset_index(drop=True)
     )
+    summary_df.insert(1, "Packet_Label", packet_label)
+    summary_df.insert(2, "Volunteer_Name", volunteer_name)
+    summary_df.insert(3, "Packet_Date", packet_date)
 
     zip_buffer = BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -1198,23 +1216,31 @@ def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50):
         zf.writestr(
             "README.txt",
             "Candidate Connect Turf Packets\n\nThis zip contains turf_summary.csv, one CSV per turf, and one walk sheet PDF per turf.\n"
+            + f"Packet Label: {packet_label or '(none)'}\nVolunteer: {volunteer_name or '(unassigned)'}\nPacket Date: {packet_date}\n"
         )
         for turf_id, turf_df in df.groupby("Turf_ID", sort=True, dropna=False):
             safe_id = sanitize_filename_part(str(turf_id))
+            packet_base = sanitize_filename_part(turf_packet_display_name(packet_label, str(turf_id)))
             csv_df = export_df[export_df["Turf_ID"] == turf_id].drop(columns=["Turf_ID"], errors="ignore")
-            zf.writestr(f"turf_packets/{safe_id}.csv", csv_df.to_csv(index=False))
+            zf.writestr(f"turf_packets/{packet_base}.csv", csv_df.to_csv(index=False))
 
             turf_street_df = build_street_list_dataframe_from_detail_df(turf_df.copy())
             summary_row = summary_df[summary_df["Turf_ID"] == turf_id]
             voters = int(summary_row["Voters"].iloc[0]) if not summary_row.empty else len(turf_df)
             households = int(summary_row["Households"].iloc[0]) if not summary_row.empty else 0
             precincts = summary_row["Precincts"].iloc[0] if not summary_row.empty else ""
-            filter_desc = f"{turf_id} | {voters:,} voters | {households:,} households"
+            title = turf_packet_display_name(packet_label, str(turf_id))
+            filter_parts = [f"{voters:,} voters", f"{households:,} households"]
+            if normalize_export_text(volunteer_name):
+                filter_parts.append(f"Volunteer: {volunteer_name}")
+            if normalize_export_text(packet_date):
+                filter_parts.append(packet_date)
             if normalize_export_text(precincts):
-                filter_desc += f" | {precincts}"
-            pdf_bytes = generate_walk_sheet_pdf_from_street_df(turf_street_df, str(turf_id), filter_desc)
+                filter_parts.append(precincts)
+            filter_desc = " | ".join(filter_parts)
+            pdf_bytes = generate_walk_sheet_pdf_from_street_df(turf_street_df, title, filter_desc)
             if pdf_bytes:
-                zf.writestr(f"turf_walksheets/{safe_id}_walksheet.pdf", pdf_bytes)
+                zf.writestr(f"turf_walksheets/{packet_base}_walksheet.pdf", pdf_bytes)
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
 
@@ -2673,6 +2699,28 @@ with output_tabs[2]:
         turf_target_size = 0
         st.caption("This will create one turf per selected precinct or municipality in the current filtered universe.")
 
+    assign_cols = st.columns(3, gap="medium")
+    with assign_cols[0]:
+        turf_packet_label = st.text_input(
+            "Packet Label",
+            value="",
+            placeholder="Week 1 - Team A",
+            key="turf_packet_label_input",
+        )
+    with assign_cols[1]:
+        turf_volunteer_name = st.text_input(
+            "Volunteer Name",
+            value="",
+            placeholder="Volunteer or team name",
+            key="turf_volunteer_name_input",
+        )
+    with assign_cols[2]:
+        turf_packet_date = st.date_input(
+            "Packet Date",
+            value=datetime.now().date(),
+            key="turf_packet_date_input",
+        )
+
     turf_cols = st.columns(2, gap="medium")
     with turf_cols[0]:
         if st.button("Prepare Turf Packet ZIP", use_container_width=True):
@@ -2681,16 +2729,22 @@ with output_tabs[2]:
                     active_filters=active,
                     mode=turf_mode_labels[turf_mode],
                     target_size=turf_target_size,
+                    volunteer_name=turf_volunteer_name,
+                    packet_label=turf_packet_label,
+                    packet_date=turf_packet_date.strftime("%Y-%m-%d") if turf_packet_date else "",
                 )
                 st.session_state["turf_packet_zip_bytes"] = zip_bytes
                 st.session_state["turf_packet_mode"] = turf_mode
+                st.session_state["turf_packet_label"] = turf_packet_label
     with turf_cols[1]:
         if "turf_packet_zip_bytes" in st.session_state and st.session_state["turf_packet_zip_bytes"]:
             mode_slug = normalize_export_text(st.session_state.get("turf_packet_mode", "turf_packets")).lower().replace(" ", "_")
+            label_slug = sanitize_filename_part(st.session_state.get("turf_packet_label", ""))
+            file_stub = f"candidate_connect_turf_packets_{label_slug}_{mode_slug}" if label_slug else f"candidate_connect_turf_packets_{mode_slug}"
             st.download_button(
                 "Download Turf Packet ZIP",
                 data=st.session_state["turf_packet_zip_bytes"],
-                file_name=f"candidate_connect_turf_packets_{mode_slug}.zip",
+                file_name=f"{file_stub}.zip",
                 mime="application/zip",
                 use_container_width=True,
             )
