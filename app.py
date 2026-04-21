@@ -2110,7 +2110,7 @@ with st.sidebar:
                 saved_universes[universe_name] = {
                     "filters": current_filters,
                     "saved_at": datetime.now().strftime("%Y-%m-%d %I:%M %p"),
-                    "count": universe_record_count(current_filters, st.session_state.get("columns", [])),
+                    "count": int(query_metrics(current_filters, st.session_state.get("columns", [])).get("voters", 0)),
                     "summary": summarize_universe_filters(current_filters),
                 }
                 save_saved_universes(saved_universes)
