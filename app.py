@@ -1364,6 +1364,15 @@ def build_filter_summary_lines(active_filters: dict) -> list[str]:
             lines.append(f"{label}: {val}")
     return lines or ["No additional filters selected"]
 
+
+def summarize_universe_filters(active_filters: dict) -> str:
+    try:
+        lines = build_filter_summary_lines(active_filters or {})
+    except Exception:
+        lines = []
+    cleaned = [str(x).strip() for x in lines if str(x).strip()]
+    return " | ".join(cleaned) if cleaned else "No additional filters selected"
+
 def build_street_list_dataframe(active_filters):
     df = fetch_filtered_detail(active_filters).copy()
     if df.empty:
@@ -2109,7 +2118,7 @@ with st.sidebar:
         st.caption(
             f"Saved: {universe_info.get('saved_at', '')} | Count: {int(universe_info.get('count', 0)):,}"
         )
-        st.caption(universe_info.get("summary", "No filters"))
+        st.caption(str(universe_info.get("summary", "No filters")))
         load_col, delete_col = st.columns(2, gap="small")
         with load_col:
             if st.button("Load Universe", use_container_width=True, key="load_sidebar_universe"):
@@ -2136,7 +2145,7 @@ with st.sidebar:
         if st.button("Save Current Universe", use_container_width=True, key="save_sidebar_universe"):
             universe_name = save_name.strip()
             if universe_name:
-                current_filters = st.session_state.get("active_filters", {})
+                current_filters = dict(st.session_state.get("active_filters", {}))
                 saved_universes = load_saved_universes()
                 saved_universes[universe_name] = {
                     "filters": current_filters,
