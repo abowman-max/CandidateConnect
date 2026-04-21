@@ -1146,7 +1146,7 @@ def assign_turf_ids(df: pd.DataFrame, mode: str, target_size: int) -> pd.DataFra
     return out
 
 
-def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50, volunteer_name: str = "", packet_label: str = "", packet_date: str = ""):
+def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50, volunteer_name: str = "", packet_label: str = "", packet_date: str = "", include_walksheets: bool = True, max_turfs: int = 0):
     df = fetch_filtered_detail(active_filters).copy()
     if df.empty:
         return b""
@@ -1210,14 +1210,27 @@ def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50, volu
     summary_df.insert(2, "Volunteer_Name", volunteer_name)
     summary_df.insert(3, "Packet_Date", packet_date)
 
+    if int(max_turfs or 0) > 0:
+        selected_turfs = summary_df["Turf_ID"].head(int(max_turfs)).tolist()
+        df = df[df["Turf_ID"].isin(selected_turfs)].copy()
+        summary_df = summary_df[summary_df["Turf_ID"].isin(selected_turfs)].copy()
+
     zip_buffer = BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("turf_summary.csv", summary_df.to_csv(index=False))
-        zf.writestr(
-            "README.txt",
-            "Candidate Connect Turf Packets\n\nThis zip contains turf_summary.csv, one CSV per turf, and one walk sheet PDF per turf.\n"
-            + f"Packet Label: {packet_label or '(none)'}\nVolunteer: {volunteer_name or '(unassigned)'}\nPacket Date: {packet_date}\n"
-        )
+        readme_lines = [
+            "Candidate Connect Turf Packets",
+            "",
+            "This zip contains turf_summary.csv and one CSV per turf.",
+            "Walk sheet PDFs are included only when 'CSV + Walk Sheet PDFs' is selected.",
+            f"Packet Label: {packet_label or '(none)'}",
+            f"Volunteer: {volunteer_name or '(unassigned)'}",
+            f"Packet Date: {packet_date}",
+            f"Mode: {mode}",
+            f"Walk Sheets Included: {'Yes' if include_walksheets else 'No'}",
+            f"Turf Limit Applied: {int(max_turfs) if int(max_turfs or 0) > 0 else 'All'}",
+        ]
+        zf.writestr("README.txt", "\n".join(readme_lines) + "\n")
         for turf_id, turf_df in df.groupby("Turf_ID", sort=True, dropna=False):
             safe_id = sanitize_filename_part(str(turf_id))
             packet_base = sanitize_filename_part(turf_packet_display_name(packet_label, str(turf_id)))
@@ -1238,9 +1251,10 @@ def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50, volu
             if normalize_export_text(precincts):
                 filter_parts.append(precincts)
             filter_desc = " | ".join(filter_parts)
-            pdf_bytes = generate_walk_sheet_pdf_from_street_df(turf_street_df, title, filter_desc)
-            if pdf_bytes:
-                zf.writestr(f"turf_walksheets/{packet_base}_walksheet.pdf", pdf_bytes)
+            if include_walksheets:
+                pdf_bytes = generate_walk_sheet_pdf_from_street_df(turf_street_df, title, filter_desc)
+                if pdf_bytes:
+                    zf.writestr(f"turf_walksheets/{packet_base}_walksheet.pdf", pdf_bytes)
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
 
@@ -2721,10 +2735,36 @@ with output_tabs[2]:
             key="turf_packet_date_input",
         )
 
+    perf_cols = st.columns([1.2, 1, 1], gap="medium")
+    with perf_cols[0]:
+        turf_output_mode = st.selectbox(
+            "Output Type",
+            ["CSV + Walk Sheet PDFs", "CSV Only (faster)"],
+            key="turf_output_mode_select",
+        )
+    with perf_cols[1]:
+        turf_limit_packets = st.number_input(
+            "Limit Turf Packets",
+            min_value=0,
+            value=0,
+            step=1,
+            help="0 means build all turfs. Use a smaller number for quick tests.",
+            key="turf_limit_packets_input",
+        )
+    with perf_cols[2]:
+        st.markdown("")
+        st.caption("CSV Only is fastest. By Precinct and By Municipality can take much longer when PDFs are included.")
+
+    if turf_output_mode == "CSV + Walk Sheet PDFs" and turf_mode in ["By Precinct", "By Municipality"]:
+        st.warning("This can take longer because the app creates one PDF per turf. For the fastest build, choose CSV Only or set a small turf limit first.")
+
     turf_cols = st.columns(2, gap="medium")
     with turf_cols[0]:
         if st.button("Prepare Turf Packet ZIP", use_container_width=True):
-            with st.spinner("Building turf packets and walk sheets from filtered detail shards..."):
+            spinner_text = "Building turf packet ZIP from filtered detail shards..."
+            if turf_output_mode == "CSV + Walk Sheet PDFs":
+                spinner_text = "Building turf packets and walk sheets from filtered detail shards..."
+            with st.spinner(spinner_text):
                 zip_bytes = build_turf_packet_zip(
                     active_filters=active,
                     mode=turf_mode_labels[turf_mode],
@@ -2732,15 +2772,22 @@ with output_tabs[2]:
                     volunteer_name=turf_volunteer_name,
                     packet_label=turf_packet_label,
                     packet_date=turf_packet_date.strftime("%Y-%m-%d") if turf_packet_date else "",
+                    include_walksheets=(turf_output_mode == "CSV + Walk Sheet PDFs"),
+                    max_turfs=int(turf_limit_packets or 0),
                 )
                 st.session_state["turf_packet_zip_bytes"] = zip_bytes
                 st.session_state["turf_packet_mode"] = turf_mode
                 st.session_state["turf_packet_label"] = turf_packet_label
+                st.session_state["turf_output_mode"] = turf_output_mode
+                st.session_state["turf_limit_packets"] = int(turf_limit_packets or 0)
     with turf_cols[1]:
         if "turf_packet_zip_bytes" in st.session_state and st.session_state["turf_packet_zip_bytes"]:
             mode_slug = normalize_export_text(st.session_state.get("turf_packet_mode", "turf_packets")).lower().replace(" ", "_")
             label_slug = sanitize_filename_part(st.session_state.get("turf_packet_label", ""))
-            file_stub = f"candidate_connect_turf_packets_{label_slug}_{mode_slug}" if label_slug else f"candidate_connect_turf_packets_{mode_slug}"
+            output_slug = "csv_only" if st.session_state.get("turf_output_mode") == "CSV Only (faster)" else "csv_and_pdfs"
+            limit_val = int(st.session_state.get("turf_limit_packets", 0) or 0)
+            limit_slug = f"_first_{limit_val}" if limit_val > 0 else ""
+            file_stub = f"candidate_connect_turf_packets_{label_slug}_{mode_slug}_{output_slug}{limit_slug}" if label_slug else f"candidate_connect_turf_packets_{mode_slug}_{output_slug}{limit_slug}"
             st.download_button(
                 "Download Turf Packet ZIP",
                 data=st.session_state["turf_packet_zip_bytes"],
