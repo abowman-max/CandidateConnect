@@ -443,8 +443,9 @@ def current_filter_clause(active, columns):
         where.append("_MBScore >= ? AND _MBScore <= ?")
         params.extend([active["mb_score_slider"][0], active["mb_score_slider"][1]])
     if active.get("new_reg_months", 0) and active.get("new_reg_months", 0) > 0:
-        where.append("_RegistrationDate >= (CURRENT_DATE - (? * INTERVAL '1 month'))")
-        params.append(int(active["new_reg_months"]))
+        if "_RegistrationDate" in columns or "RegistrationDate" in columns:
+            where.append("_RegistrationDate >= (CURRENT_DATE - (? * INTERVAL '1 month'))")
+            params.append(int(active["new_reg_months"]))
     if active.get("has_email") == "Has Email":
         where.append("_HasEmail = true")
     elif active.get("has_email") == "No Email":
