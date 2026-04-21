@@ -1915,7 +1915,6 @@ def build_street_list_dataframe_from_detail_df(df: pd.DataFrame):
     out = out.sort_values(by=["Precinct", "StreetGroup", "HouseNumSort", "AptSort", "FullName"], kind="stable").reset_index(drop=True)
     return out
 
-
 def make_walk_sheet_groups_from_street_df(street_df: pd.DataFrame):
     if street_df is None or street_df.empty:
         return []
@@ -1932,7 +1931,6 @@ def make_walk_sheet_groups_from_street_df(street_df: pd.DataFrame):
                 "rows": addr_grp.to_dict("records"),
             })
     return groups
-
 
 def generate_walk_sheet_pdf_from_street_df(street_df: pd.DataFrame, title: str, filter_desc: str = ""):
     if street_df is None or street_df.empty:
@@ -2021,7 +2019,6 @@ def generate_walk_sheet_pdf_from_street_df(street_df: pd.DataFrame, title: str, 
     draw_footer(c, page_num, total_pages, printed_date)
     c.save()
     return buffer.getvalue()
-
 
 def _summary_count_df(active_filters, columns, group_expr, label_alias="Label", include_blank=True):
     con = get_conn()
@@ -2486,44 +2483,6 @@ if area_choices:
     st.markdown(table_html, unsafe_allow_html=True)
 else:
     st.caption("No area columns found")
-with output_tabs[2]:
-    st.markdown('<div class="small-header">Turf Builder</div>', unsafe_allow_html=True)
-    st.caption("Build packet-style turf exports with one CSV and one Walk Sheet PDF per turf inside a single zip file.")
-
-    turf_mode = st.selectbox(
-        "Split Method",
-        ["Target Doors", "Target Voters", "By Precinct", "By Municipality"],
-        key="turf_builder_mode",
-    )
-
-    target_size = 50
-    if turf_mode in ["Target Doors", "Target Voters"]:
-        label = "Target Doors Per Turf" if turf_mode == "Target Doors" else "Target Voters Per Turf"
-        target_size = st.slider(label, min_value=10, max_value=250, value=50, step=5, key="turf_target_size")
-
-    turf_cols = st.columns(2, gap="medium")
-    with turf_cols[0]:
-        if st.button("Prepare Turf Packet ZIP", use_container_width=True):
-            with st.spinner("Building turf packet zip with CSVs and Walk Sheet PDFs..."):
-                zip_bytes, summary_df = build_turf_packet_zip(active, mode=turf_mode, target_size=target_size)
-                st.session_state["turf_packet_zip_bytes"] = zip_bytes
-                st.session_state["turf_summary_df"] = summary_df
-                st.session_state["turf_packet_mode"] = turf_mode
-    with turf_cols[1]:
-        if "turf_packet_zip_bytes" in st.session_state and st.session_state["turf_packet_zip_bytes"]:
-            st.download_button(
-                "Download Turf Packet ZIP",
-                data=st.session_state["turf_packet_zip_bytes"],
-                file_name="candidate_connect_turf_packets.zip",
-                mime="application/zip",
-                use_container_width=True,
-            )
-
-    if "turf_summary_df" in st.session_state and not st.session_state["turf_summary_df"].empty:
-        st.markdown("#### Turf Summary")
-        st.dataframe(st.session_state["turf_summary_df"], use_container_width=True, hide_index=True)
-
-
 st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -2676,44 +2635,6 @@ with output_tabs[1]:
                     mime="application/pdf",
                     use_container_width=True,
                 )
-
-
-with output_tabs[2]:
-    st.markdown('<div class="small-header">Turf Builder</div>', unsafe_allow_html=True)
-    st.caption("Build packet-style turf exports with one CSV and one Walk Sheet PDF per turf inside a single zip file.")
-
-    turf_mode = st.selectbox(
-        "Split Method",
-        ["Target Doors", "Target Voters", "By Precinct", "By Municipality"],
-        key="turf_builder_mode",
-    )
-
-    target_size = 50
-    if turf_mode in ["Target Doors", "Target Voters"]:
-        label = "Target Doors Per Turf" if turf_mode == "Target Doors" else "Target Voters Per Turf"
-        target_size = st.slider(label, min_value=10, max_value=250, value=50, step=5, key="turf_target_size")
-
-    turf_cols = st.columns(2, gap="medium")
-    with turf_cols[0]:
-        if st.button("Prepare Turf Packet ZIP", use_container_width=True):
-            with st.spinner("Building turf packet zip with CSVs and Walk Sheet PDFs..."):
-                zip_bytes, summary_df = build_turf_packet_zip(active, mode=turf_mode, target_size=target_size)
-                st.session_state["turf_packet_zip_bytes"] = zip_bytes
-                st.session_state["turf_summary_df"] = summary_df
-                st.session_state["turf_packet_mode"] = turf_mode
-    with turf_cols[1]:
-        if "turf_packet_zip_bytes" in st.session_state and st.session_state["turf_packet_zip_bytes"]:
-            st.download_button(
-                "Download Turf Packet ZIP",
-                data=st.session_state["turf_packet_zip_bytes"],
-                file_name="candidate_connect_turf_packets.zip",
-                mime="application/zip",
-                use_container_width=True,
-            )
-
-    if "turf_summary_df" in st.session_state and not st.session_state["turf_summary_df"].empty:
-        st.markdown("#### Turf Summary")
-        st.dataframe(st.session_state["turf_summary_df"], use_container_width=True, hide_index=True)
 
 
 st.markdown('</div>', unsafe_allow_html=True)
