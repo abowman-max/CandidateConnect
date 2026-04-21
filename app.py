@@ -3494,464 +3494,464 @@ with dashboard_tabs[2]:
         st.caption("This workbook includes Overview, Filters, County, USC, STS, and STH sheets for the current universe.")
     else:
         output_tabs = st.tabs(["Exports", "Reports", "Turf Builder"])
-    with output_tabs[0]:
-        st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
-        st.caption("CSV files are only built when you click the button for that export type.")
-
-        mail_mode = st.radio(
-            "Mailing Mode",
-            ["Not Householded", "Householded"],
-            horizontal=True,
-            key="mail_mode_radio",
-        )
-
-        exp_cols = st.columns(3, gap="medium")
-
-        with exp_cols[0]:
-            if st.button("Prepare Filtered CSV", use_container_width=True):
-                with st.spinner("Building filtered CSV from detail shards..."):
-                    export_df = build_filtered_csv_export(active)
-                    st.session_state["filtered_export_df"] = export_df
-            if "filtered_export_df" in st.session_state:
-                st.download_button(
-                    "Download Filtered CSV",
-                    data=dataframe_to_csv_bytes(st.session_state["filtered_export_df"]),
-                    file_name="candidate_connect_filtered.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-
-        with exp_cols[1]:
-            if st.button("Prepare Texting CSV", use_container_width=True):
-                with st.spinner("Building texting CSV from detail shards..."):
-                    export_df = build_texting_export(active)
-                    st.session_state["texting_export_df"] = export_df
-            if "texting_export_df" in st.session_state:
-                st.download_button(
-                    "Download Texting CSV",
-                    data=dataframe_to_csv_bytes(st.session_state["texting_export_df"]),
-                    file_name="candidate_connect_texting.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-
-        with exp_cols[2]:
-            if st.button("Prepare Mail CSV", use_container_width=True):
-                with st.spinner("Building mail CSV from detail shards..."):
-                    export_df = build_mail_export(active, householded=(mail_mode == "Householded"))
-                    st.session_state["mail_export_df"] = export_df
-                    st.session_state["mail_export_mode"] = mail_mode
-            if "mail_export_df" in st.session_state:
-                suffix = "householded" if st.session_state.get("mail_export_mode") == "Householded" else "individual"
-                st.download_button(
-                    "Download Mail CSV",
-                    data=dataframe_to_csv_bytes(st.session_state["mail_export_df"]),
-                    file_name=f"candidate_connect_mail_{suffix}.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-
-    with output_tabs[1]:
-        st.markdown('<div class="small-header">Reports</div>', unsafe_allow_html=True)
-        st.caption("Prepare PDFs only when needed to keep the app responsive.")
-
-        report_sections = st.tabs(["Summary", "Street List", "Walk Sheet", "Mailing Labels"])
-
-        with report_sections[0]:
-            st.caption("Builds a clean PDF summary of the current filtered universe with overview counts, selected filters, and party/gender/age breakdowns.")
-            summary_cols = st.columns(2, gap="medium")
-            with summary_cols[0]:
-                if st.button("Prepare Summary Report PDF", use_container_width=True):
-                    with st.spinner("Building Summary Report PDF from current filtered universe..."):
-                        pdf_bytes = generate_summary_report_pdf_bytes(active, cols)
-                        st.session_state["summary_report_pdf_bytes"] = pdf_bytes
-            with summary_cols[1]:
-                if "summary_report_pdf_bytes" in st.session_state and st.session_state["summary_report_pdf_bytes"]:
+        with output_tabs[0]:
+            st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
+            st.caption("CSV files are only built when you click the button for that export type.")
+    
+            mail_mode = st.radio(
+                "Mailing Mode",
+                ["Not Householded", "Householded"],
+                horizontal=True,
+                key="mail_mode_radio",
+            )
+    
+            exp_cols = st.columns(3, gap="medium")
+    
+            with exp_cols[0]:
+                if st.button("Prepare Filtered CSV", use_container_width=True):
+                    with st.spinner("Building filtered CSV from detail shards..."):
+                        export_df = build_filtered_csv_export(active)
+                        st.session_state["filtered_export_df"] = export_df
+                if "filtered_export_df" in st.session_state:
                     st.download_button(
-                        "Download Summary Report PDF",
-                        data=st.session_state["summary_report_pdf_bytes"],
-                        file_name="candidate_connect_summary_report.pdf",
-                        mime="application/pdf",
+                        "Download Filtered CSV",
+                        data=dataframe_to_csv_bytes(st.session_state["filtered_export_df"]),
+                        file_name="candidate_connect_filtered.csv",
+                        mime="text/csv",
                         use_container_width=True,
                     )
-
-        with report_sections[1]:
-            st.caption("Builds a compact precinct-grouped PDF and also supports a Street List Excel tracking sheet so the same list can be used to record F, A, U, NH, and Yard Sign results.")
-            upload_cols = st.columns([1, 1.2, 1], gap="medium")
-            with upload_cols[0]:
-                st.download_button(
-                    "Download Street Results CSV Template",
-                    data=get_street_results_template_csv_bytes(),
-                    file_name="candidate_connect_street_results_template.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-                st.download_button(
-                    "Download Street List Excel Tracking Sheet",
-                    data=get_street_results_sheet_bytes(active),
-                    file_name="candidate_connect_street_list_tracking.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-            with upload_cols[1]:
-                uploaded_results_file = st.file_uploader(
-                    "Upload Street Results File",
-                    type=["csv", "xlsx"],
-                    key="street_results_upload",
-                    help="Upload either the Street List Excel tracking sheet or a CSV using PA ID Number plus F, A, U, NH, and Yard Sign columns.",
-                )
-                if uploaded_results_file is not None:
-                    upload_sig = f"{uploaded_results_file.name}:{getattr(uploaded_results_file, 'size', 0)}"
-                    if st.session_state.get("street_results_upload_sig") != upload_sig:
-                        try:
-                            if str(uploaded_results_file.name).lower().endswith(".xlsx"):
-                                raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str).fillna("")
-                                normalized_cols = [re.sub(r"[^a-z0-9]+", "", str(c).strip().lower()) for c in raw_upload_df.columns]
-                                if "paidnumber" not in normalized_cols:
-                                    try:
-                                        raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str, header=4).fillna("")
-                                    except Exception:
-                                        uploaded_results_file.seek(0)
-                                        raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str).fillna("")
-                                uploaded_results_file.seek(0)
-                            else:
-                                raw_upload_df = pd.read_csv(uploaded_results_file, dtype=str).fillna("")
-                            standardized_upload_df = standardize_uploaded_street_results(raw_upload_df)
-                            if standardized_upload_df.empty:
-                                st.warning("No usable PA ID Number column was found in the uploaded file.")
-                            else:
-                                st.session_state["street_results_df"] = standardized_upload_df
-                                st.session_state["street_results_upload_sig"] = upload_sig
-                                st.session_state["street_results_upload_name"] = uploaded_results_file.name
-                                st.success(f"Loaded {len(standardized_upload_df):,} street-result rows.")
-                        except Exception as exc:
-                            st.error(f"Could not read the street results file: {exc}")
-            with upload_cols[2]:
-                loaded_results = st.session_state.get("street_results_df")
-                if isinstance(loaded_results, pd.DataFrame) and not loaded_results.empty:
-                    st.caption(f"Loaded rows: {len(loaded_results):,}")
-                    st.caption(f"Source: {st.session_state.get('street_results_upload_name', 'uploaded CSV')}")
-                    if st.button("Clear Uploaded Street Results", use_container_width=True):
-                        st.session_state["street_results_df"] = pd.DataFrame(columns=["PA ID Number", "F", "A", "U", "NH", "Yard Sign", "Notes"])
-                        st.session_state["street_results_filters"] = {}
-                        st.session_state.pop("street_results_upload_sig", None)
-                        st.session_state.pop("street_results_upload_name", None)
-                        st.rerun()
-                else:
-                    st.caption("No street results uploaded yet.")
-
-            loaded_results = st.session_state.get("street_results_df")
-            if isinstance(loaded_results, pd.DataFrame) and not loaded_results.empty:
-                st.caption("These tracking filters only affect the Street List outputs, so you can reprint or re-export candidate follow-up lists without changing the dashboard counts.")
-                filter_defaults = st.session_state.get("street_results_filters", {}) or {}
-                street_filter_cols = st.columns(5, gap="small")
-                street_results_filters = {}
-                for col, field in zip(street_filter_cols, ["F", "A", "U", "NH", "Yard Sign"]):
-                    with col:
-                        street_results_filters[field] = st.selectbox(
-                            field,
-                            ["All", "Marked", "Unmarked"],
-                            index=["All", "Marked", "Unmarked"].index(filter_defaults.get(field, "All")),
-                            key=f"street_results_filter_{field}",
+    
+            with exp_cols[1]:
+                if st.button("Prepare Texting CSV", use_container_width=True):
+                    with st.spinner("Building texting CSV from detail shards..."):
+                        export_df = build_texting_export(active)
+                        st.session_state["texting_export_df"] = export_df
+                if "texting_export_df" in st.session_state:
+                    st.download_button(
+                        "Download Texting CSV",
+                        data=dataframe_to_csv_bytes(st.session_state["texting_export_df"]),
+                        file_name="candidate_connect_texting.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+    
+            with exp_cols[2]:
+                if st.button("Prepare Mail CSV", use_container_width=True):
+                    with st.spinner("Building mail CSV from detail shards..."):
+                        export_df = build_mail_export(active, householded=(mail_mode == "Householded"))
+                        st.session_state["mail_export_df"] = export_df
+                        st.session_state["mail_export_mode"] = mail_mode
+                if "mail_export_df" in st.session_state:
+                    suffix = "householded" if st.session_state.get("mail_export_mode") == "Householded" else "individual"
+                    st.download_button(
+                        "Download Mail CSV",
+                        data=dataframe_to_csv_bytes(st.session_state["mail_export_df"]),
+                        file_name=f"candidate_connect_mail_{suffix}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+    
+        with output_tabs[1]:
+            st.markdown('<div class="small-header">Reports</div>', unsafe_allow_html=True)
+            st.caption("Prepare PDFs only when needed to keep the app responsive.")
+    
+            report_sections = st.tabs(["Summary", "Street List", "Walk Sheet", "Mailing Labels"])
+    
+            with report_sections[0]:
+                st.caption("Builds a clean PDF summary of the current filtered universe with overview counts, selected filters, and party/gender/age breakdowns.")
+                summary_cols = st.columns(2, gap="medium")
+                with summary_cols[0]:
+                    if st.button("Prepare Summary Report PDF", use_container_width=True):
+                        with st.spinner("Building Summary Report PDF from current filtered universe..."):
+                            pdf_bytes = generate_summary_report_pdf_bytes(active, cols)
+                            st.session_state["summary_report_pdf_bytes"] = pdf_bytes
+                with summary_cols[1]:
+                    if "summary_report_pdf_bytes" in st.session_state and st.session_state["summary_report_pdf_bytes"]:
+                        st.download_button(
+                            "Download Summary Report PDF",
+                            data=st.session_state["summary_report_pdf_bytes"],
+                            file_name="candidate_connect_summary_report.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
                         )
-                st.session_state["street_results_filters"] = street_results_filters
-            else:
-                st.caption("Download the Street List Excel tracking sheet if you want a ready-to-use file with F, A, U, NH, Yard Sign, and Notes columns, then upload it back after results are entered.")
-
-            pdf_cols = st.columns(2, gap="medium")
-            with pdf_cols[0]:
-                if st.button("Prepare Street List PDF", use_container_width=True):
-                    with st.spinner("Building Street List PDF from filtered detail shards..."):
-                        pdf_bytes = generate_street_list_pdf_bytes(active)
-                        st.session_state["street_pdf_bytes"] = pdf_bytes
-            with pdf_cols[1]:
-                if "street_pdf_bytes" in st.session_state and st.session_state["street_pdf_bytes"]:
+    
+            with report_sections[1]:
+                st.caption("Builds a compact precinct-grouped PDF and also supports a Street List Excel tracking sheet so the same list can be used to record F, A, U, NH, and Yard Sign results.")
+                upload_cols = st.columns([1, 1.2, 1], gap="medium")
+                with upload_cols[0]:
                     st.download_button(
-                        "Download Street List PDF",
-                        data=st.session_state["street_pdf_bytes"],
-                        file_name="candidate_connect_street_list.pdf",
-                        mime="application/pdf",
+                        "Download Street Results CSV Template",
+                        data=get_street_results_template_csv_bytes(),
+                        file_name="candidate_connect_street_results_template.csv",
+                        mime="text/csv",
                         use_container_width=True,
                     )
-
-        with report_sections[2]:
-            st.caption("Builds a volunteer-friendly walk sheet and supports a tracking workbook that can be uploaded back by PA ID.")
-            upload_cols = st.columns([1, 1.15, 1], gap="medium")
-            with upload_cols[0]:
-                st.download_button(
-                    "Download Walk Sheet Tracking Template",
-                    data=get_walk_sheet_tracking_template_csv_bytes(),
-                    file_name="candidate_connect_walk_sheet_tracking_template.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-                if st.button("Prepare Walk Sheet Excel Tracking Sheet", use_container_width=True):
-                    with st.spinner("Building Walk Sheet Excel tracking sheet from filtered detail shards..."):
-                        excel_bytes = build_walk_sheet_tracking_excel_bytes(active)
-                        st.session_state["walk_sheet_tracking_excel_bytes"] = excel_bytes
-                if "walk_sheet_tracking_excel_bytes" in st.session_state and st.session_state["walk_sheet_tracking_excel_bytes"]:
                     st.download_button(
-                        "Download Walk Sheet Excel Tracking Sheet",
-                        data=st.session_state["walk_sheet_tracking_excel_bytes"],
-                        file_name="candidate_connect_walk_sheet_tracking.xlsx",
+                        "Download Street List Excel Tracking Sheet",
+                        data=get_street_results_sheet_bytes(active),
+                        file_name="candidate_connect_street_list_tracking.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                     )
-            with upload_cols[1]:
-                uploaded_walk_file = st.file_uploader(
-                    "Upload Walk Sheet Results",
-                    type=["csv", "xlsx"],
-                    key="walk_results_upload",
-                    help="Upload a completed Walk Sheet tracking workbook or CSV using PA ID Number plus Contacted, Result, Support Level, Follow-Up, and Notes columns.",
-                )
-                if uploaded_walk_file is not None:
-                    upload_sig = f"{uploaded_walk_file.name}:{getattr(uploaded_walk_file, 'size', 0)}"
-                    if st.session_state.get("walk_results_upload_sig") != upload_sig:
-                        try:
-                            if str(uploaded_walk_file.name).lower().endswith(".xlsx"):
-                                raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str).fillna("")
-                                normalized_cols = [re.sub(r"[^a-z0-9]+", "", str(c).strip().lower()) for c in raw_upload_df.columns]
-                                if "paidnumber" not in normalized_cols:
-                                    try:
-                                        raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str, header=4).fillna("")
-                                    except Exception:
-                                        uploaded_walk_file.seek(0)
-                                        raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str).fillna("")
-                                uploaded_walk_file.seek(0)
-                            else:
-                                raw_upload_df = pd.read_csv(uploaded_walk_file, dtype=str).fillna("")
-                            standardized_upload_df = standardize_uploaded_walk_results(raw_upload_df)
-                            if standardized_upload_df.empty:
-                                st.warning("No usable PA ID Number column was found in the uploaded Walk Sheet file.")
-                            else:
-                                st.session_state["walk_results_df"] = standardized_upload_df
-                                st.session_state["walk_results_upload_sig"] = upload_sig
-                                st.session_state["walk_results_upload_name"] = uploaded_walk_file.name
-                                st.success(f"Loaded {len(standardized_upload_df):,} walk-result rows.")
-                        except Exception as exc:
-                            st.error(f"Could not read the Walk Sheet results file: {exc}")
-            with upload_cols[2]:
+                with upload_cols[1]:
+                    uploaded_results_file = st.file_uploader(
+                        "Upload Street Results File",
+                        type=["csv", "xlsx"],
+                        key="street_results_upload",
+                        help="Upload either the Street List Excel tracking sheet or a CSV using PA ID Number plus F, A, U, NH, and Yard Sign columns.",
+                    )
+                    if uploaded_results_file is not None:
+                        upload_sig = f"{uploaded_results_file.name}:{getattr(uploaded_results_file, 'size', 0)}"
+                        if st.session_state.get("street_results_upload_sig") != upload_sig:
+                            try:
+                                if str(uploaded_results_file.name).lower().endswith(".xlsx"):
+                                    raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str).fillna("")
+                                    normalized_cols = [re.sub(r"[^a-z0-9]+", "", str(c).strip().lower()) for c in raw_upload_df.columns]
+                                    if "paidnumber" not in normalized_cols:
+                                        try:
+                                            raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str, header=4).fillna("")
+                                        except Exception:
+                                            uploaded_results_file.seek(0)
+                                            raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str).fillna("")
+                                    uploaded_results_file.seek(0)
+                                else:
+                                    raw_upload_df = pd.read_csv(uploaded_results_file, dtype=str).fillna("")
+                                standardized_upload_df = standardize_uploaded_street_results(raw_upload_df)
+                                if standardized_upload_df.empty:
+                                    st.warning("No usable PA ID Number column was found in the uploaded file.")
+                                else:
+                                    st.session_state["street_results_df"] = standardized_upload_df
+                                    st.session_state["street_results_upload_sig"] = upload_sig
+                                    st.session_state["street_results_upload_name"] = uploaded_results_file.name
+                                    st.success(f"Loaded {len(standardized_upload_df):,} street-result rows.")
+                            except Exception as exc:
+                                st.error(f"Could not read the street results file: {exc}")
+                with upload_cols[2]:
+                    loaded_results = st.session_state.get("street_results_df")
+                    if isinstance(loaded_results, pd.DataFrame) and not loaded_results.empty:
+                        st.caption(f"Loaded rows: {len(loaded_results):,}")
+                        st.caption(f"Source: {st.session_state.get('street_results_upload_name', 'uploaded CSV')}")
+                        if st.button("Clear Uploaded Street Results", use_container_width=True):
+                            st.session_state["street_results_df"] = pd.DataFrame(columns=["PA ID Number", "F", "A", "U", "NH", "Yard Sign", "Notes"])
+                            st.session_state["street_results_filters"] = {}
+                            st.session_state.pop("street_results_upload_sig", None)
+                            st.session_state.pop("street_results_upload_name", None)
+                            st.rerun()
+                    else:
+                        st.caption("No street results uploaded yet.")
+    
+                loaded_results = st.session_state.get("street_results_df")
+                if isinstance(loaded_results, pd.DataFrame) and not loaded_results.empty:
+                    st.caption("These tracking filters only affect the Street List outputs, so you can reprint or re-export candidate follow-up lists without changing the dashboard counts.")
+                    filter_defaults = st.session_state.get("street_results_filters", {}) or {}
+                    street_filter_cols = st.columns(5, gap="small")
+                    street_results_filters = {}
+                    for col, field in zip(street_filter_cols, ["F", "A", "U", "NH", "Yard Sign"]):
+                        with col:
+                            street_results_filters[field] = st.selectbox(
+                                field,
+                                ["All", "Marked", "Unmarked"],
+                                index=["All", "Marked", "Unmarked"].index(filter_defaults.get(field, "All")),
+                                key=f"street_results_filter_{field}",
+                            )
+                    st.session_state["street_results_filters"] = street_results_filters
+                else:
+                    st.caption("Download the Street List Excel tracking sheet if you want a ready-to-use file with F, A, U, NH, Yard Sign, and Notes columns, then upload it back after results are entered.")
+    
+                pdf_cols = st.columns(2, gap="medium")
+                with pdf_cols[0]:
+                    if st.button("Prepare Street List PDF", use_container_width=True):
+                        with st.spinner("Building Street List PDF from filtered detail shards..."):
+                            pdf_bytes = generate_street_list_pdf_bytes(active)
+                            st.session_state["street_pdf_bytes"] = pdf_bytes
+                with pdf_cols[1]:
+                    if "street_pdf_bytes" in st.session_state and st.session_state["street_pdf_bytes"]:
+                        st.download_button(
+                            "Download Street List PDF",
+                            data=st.session_state["street_pdf_bytes"],
+                            file_name="candidate_connect_street_list.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+    
+            with report_sections[2]:
+                st.caption("Builds a volunteer-friendly walk sheet and supports a tracking workbook that can be uploaded back by PA ID.")
+                upload_cols = st.columns([1, 1.15, 1], gap="medium")
+                with upload_cols[0]:
+                    st.download_button(
+                        "Download Walk Sheet Tracking Template",
+                        data=get_walk_sheet_tracking_template_csv_bytes(),
+                        file_name="candidate_connect_walk_sheet_tracking_template.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+                    if st.button("Prepare Walk Sheet Excel Tracking Sheet", use_container_width=True):
+                        with st.spinner("Building Walk Sheet Excel tracking sheet from filtered detail shards..."):
+                            excel_bytes = build_walk_sheet_tracking_excel_bytes(active)
+                            st.session_state["walk_sheet_tracking_excel_bytes"] = excel_bytes
+                    if "walk_sheet_tracking_excel_bytes" in st.session_state and st.session_state["walk_sheet_tracking_excel_bytes"]:
+                        st.download_button(
+                            "Download Walk Sheet Excel Tracking Sheet",
+                            data=st.session_state["walk_sheet_tracking_excel_bytes"],
+                            file_name="candidate_connect_walk_sheet_tracking.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                        )
+                with upload_cols[1]:
+                    uploaded_walk_file = st.file_uploader(
+                        "Upload Walk Sheet Results",
+                        type=["csv", "xlsx"],
+                        key="walk_results_upload",
+                        help="Upload a completed Walk Sheet tracking workbook or CSV using PA ID Number plus Contacted, Result, Support Level, Follow-Up, and Notes columns.",
+                    )
+                    if uploaded_walk_file is not None:
+                        upload_sig = f"{uploaded_walk_file.name}:{getattr(uploaded_walk_file, 'size', 0)}"
+                        if st.session_state.get("walk_results_upload_sig") != upload_sig:
+                            try:
+                                if str(uploaded_walk_file.name).lower().endswith(".xlsx"):
+                                    raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str).fillna("")
+                                    normalized_cols = [re.sub(r"[^a-z0-9]+", "", str(c).strip().lower()) for c in raw_upload_df.columns]
+                                    if "paidnumber" not in normalized_cols:
+                                        try:
+                                            raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str, header=4).fillna("")
+                                        except Exception:
+                                            uploaded_walk_file.seek(0)
+                                            raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str).fillna("")
+                                    uploaded_walk_file.seek(0)
+                                else:
+                                    raw_upload_df = pd.read_csv(uploaded_walk_file, dtype=str).fillna("")
+                                standardized_upload_df = standardize_uploaded_walk_results(raw_upload_df)
+                                if standardized_upload_df.empty:
+                                    st.warning("No usable PA ID Number column was found in the uploaded Walk Sheet file.")
+                                else:
+                                    st.session_state["walk_results_df"] = standardized_upload_df
+                                    st.session_state["walk_results_upload_sig"] = upload_sig
+                                    st.session_state["walk_results_upload_name"] = uploaded_walk_file.name
+                                    st.success(f"Loaded {len(standardized_upload_df):,} walk-result rows.")
+                            except Exception as exc:
+                                st.error(f"Could not read the Walk Sheet results file: {exc}")
+                with upload_cols[2]:
+                    loaded_walk_results = st.session_state.get("walk_results_df")
+                    if isinstance(loaded_walk_results, pd.DataFrame) and not loaded_walk_results.empty:
+                        st.caption(f"Loaded rows: {len(loaded_walk_results):,}")
+                        st.caption(f"Source: {st.session_state.get('walk_results_upload_name', 'uploaded file')}")
+                        if st.button("Clear Uploaded Walk Sheet Results", use_container_width=True):
+                            st.session_state["walk_results_df"] = pd.DataFrame(columns=["PA ID Number", "Contacted", "Result", "Support Level", "Follow-Up", "Notes"])
+                            st.session_state["walk_results_filters"] = {}
+                            st.session_state.pop("walk_results_upload_sig", None)
+                            st.session_state.pop("walk_results_upload_name", None)
+                            st.rerun()
+                    else:
+                        st.caption("No Walk Sheet results uploaded yet.")
+    
                 loaded_walk_results = st.session_state.get("walk_results_df")
                 if isinstance(loaded_walk_results, pd.DataFrame) and not loaded_walk_results.empty:
-                    st.caption(f"Loaded rows: {len(loaded_walk_results):,}")
-                    st.caption(f"Source: {st.session_state.get('walk_results_upload_name', 'uploaded file')}")
-                    if st.button("Clear Uploaded Walk Sheet Results", use_container_width=True):
-                        st.session_state["walk_results_df"] = pd.DataFrame(columns=["PA ID Number", "Contacted", "Result", "Support Level", "Follow-Up", "Notes"])
-                        st.session_state["walk_results_filters"] = {}
-                        st.session_state.pop("walk_results_upload_sig", None)
-                        st.session_state.pop("walk_results_upload_name", None)
-                        st.rerun()
+                    st.caption("These tracking filters apply only to the Walk Sheet PDF, so you can rebuild volunteer re-knock or follow-up sheets without changing the dashboard counts.")
+                    filter_defaults = st.session_state.get("walk_results_filters", {}) or {}
+                    walk_filter_cols = st.columns(4, gap="small")
+                    with walk_filter_cols[0]:
+                        contacted_filter = st.selectbox(
+                            "Contacted",
+                            ["All", "Marked", "Unmarked"],
+                            index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Contacted", "All")),
+                            key="walk_results_filter_contacted",
+                        )
+                    with walk_filter_cols[1]:
+                        not_home_filter = st.selectbox(
+                            "Not Home",
+                            ["All", "Marked", "Unmarked"],
+                            index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Not Home", "All")),
+                            key="walk_results_filter_not_home",
+                        )
+                    with walk_filter_cols[2]:
+                        followup_filter = st.selectbox(
+                            "Follow-Up",
+                            ["All", "Marked", "Unmarked"],
+                            index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Follow-Up", "All")),
+                            key="walk_results_filter_followup",
+                        )
+                    support_options = ["All"] + sorted(
+                        {normalize_export_text(v) for v in loaded_walk_results["Support Level"].tolist() if normalize_export_text(v)}
+                    )
+                    default_support = filter_defaults.get("Support Level", "All")
+                    if default_support not in support_options:
+                        default_support = "All"
+                    with walk_filter_cols[3]:
+                        support_filter = st.selectbox(
+                            "Support Level",
+                            support_options,
+                            index=support_options.index(default_support),
+                            key="walk_results_filter_support",
+                        )
+                    st.session_state["walk_results_filters"] = {
+                        "Contacted": contacted_filter,
+                        "Not Home": not_home_filter,
+                        "Follow-Up": followup_filter,
+                        "Support Level": support_filter,
+                    }
                 else:
-                    st.caption("No Walk Sheet results uploaded yet.")
-
-            loaded_walk_results = st.session_state.get("walk_results_df")
-            if isinstance(loaded_walk_results, pd.DataFrame) and not loaded_walk_results.empty:
-                st.caption("These tracking filters apply only to the Walk Sheet PDF, so you can rebuild volunteer re-knock or follow-up sheets without changing the dashboard counts.")
-                filter_defaults = st.session_state.get("walk_results_filters", {}) or {}
-                walk_filter_cols = st.columns(4, gap="small")
-                with walk_filter_cols[0]:
-                    contacted_filter = st.selectbox(
-                        "Contacted",
-                        ["All", "Marked", "Unmarked"],
-                        index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Contacted", "All")),
-                        key="walk_results_filter_contacted",
-                    )
-                with walk_filter_cols[1]:
-                    not_home_filter = st.selectbox(
-                        "Not Home",
-                        ["All", "Marked", "Unmarked"],
-                        index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Not Home", "All")),
-                        key="walk_results_filter_not_home",
-                    )
-                with walk_filter_cols[2]:
-                    followup_filter = st.selectbox(
-                        "Follow-Up",
-                        ["All", "Marked", "Unmarked"],
-                        index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Follow-Up", "All")),
-                        key="walk_results_filter_followup",
-                    )
-                support_options = ["All"] + sorted(
-                    {normalize_export_text(v) for v in loaded_walk_results["Support Level"].tolist() if normalize_export_text(v)}
+                    st.caption("Download the Walk Sheet Excel tracking sheet if you want a ready-to-use file with Contacted, Result, Support Level, Follow-Up, and Notes columns, then upload it back after results are entered.")
+    
+                walk_cols = st.columns(2, gap="medium")
+                with walk_cols[0]:
+                    if st.button("Prepare Walk Sheet PDF", use_container_width=True):
+                        with st.spinner("Building Walk Sheet PDF from filtered detail shards..."):
+                            pdf_bytes = generate_walk_sheet_pdf_bytes(active)
+                            st.session_state["walk_sheet_pdf_bytes"] = pdf_bytes
+                with walk_cols[1]:
+                    if "walk_sheet_pdf_bytes" in st.session_state and st.session_state["walk_sheet_pdf_bytes"]:
+                        st.download_button(
+                            "Download Walk Sheet PDF",
+                            data=st.session_state["walk_sheet_pdf_bytes"],
+                            file_name="candidate_connect_walk_sheet.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+    
+            with report_sections[3]:
+                st.caption("Builds a print-ready Avery 5160-style PDF label sheet from the current mail export universe.")
+                label_mode = st.radio(
+                    "Label Mode",
+                    ["Householded", "Individual"],
+                    horizontal=True,
+                    key="mail_labels_mode",
                 )
-                default_support = filter_defaults.get("Support Level", "All")
-                if default_support not in support_options:
-                    default_support = "All"
-                with walk_filter_cols[3]:
-                    support_filter = st.selectbox(
-                        "Support Level",
-                        support_options,
-                        index=support_options.index(default_support),
-                        key="walk_results_filter_support",
-                    )
-                st.session_state["walk_results_filters"] = {
-                    "Contacted": contacted_filter,
-                    "Not Home": not_home_filter,
-                    "Follow-Up": followup_filter,
-                    "Support Level": support_filter,
-                }
+                label_cols = st.columns(2, gap="medium")
+                with label_cols[0]:
+                    if st.button("Prepare Mailing Labels PDF", use_container_width=True):
+                        with st.spinner("Building mailing labels PDF from filtered detail shards..."):
+                            pdf_bytes = generate_mailing_labels_pdf_bytes(active, householded=(label_mode == "Householded"))
+                            st.session_state["mailing_labels_pdf_bytes"] = pdf_bytes
+                            st.session_state["mailing_labels_pdf_mode"] = label_mode
+                with label_cols[1]:
+                    if "mailing_labels_pdf_bytes" in st.session_state and st.session_state["mailing_labels_pdf_bytes"]:
+                        suffix = "householded" if st.session_state.get("mailing_labels_pdf_mode") == "Householded" else "individual"
+                        st.download_button(
+                            "Download Mailing Labels PDF",
+                            data=st.session_state["mailing_labels_pdf_bytes"],
+                            file_name=f"candidate_connect_mailing_labels_{suffix}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+    
+    
+        with output_tabs[2]:
+            st.markdown('<div class="small-header">Turf Builder</div>', unsafe_allow_html=True)
+            st.caption("Split the current filtered universe into turf packets and download a ZIP with per-turf CSVs and Walk Sheet PDFs.")
+    
+            turf_mode_labels = {
+                "Target Doors": "doors",
+                "Target Voters": "voters",
+                "By Precinct": "precinct",
+                "By Municipality": "municipality",
+            }
+    
+            turf_mode = st.selectbox(
+                "Split Method",
+                list(turf_mode_labels.keys()),
+                key="turf_mode_select",
+            )
+    
+            if turf_mode in ["Target Doors", "Target Voters"]:
+                default_size = 50 if turf_mode == "Target Doors" else 100
+                turf_target_size = st.slider(
+                    "Target Size Per Turf",
+                    min_value=10,
+                    max_value=500,
+                    value=default_size,
+                    step=5,
+                    key="turf_target_size_slider",
+                )
+                st.caption(
+                    "Target Doors uses households/address groups. Target Voters uses total voter records. "
+                    "Packets are built sequentially from the current filtered universe."
+                )
             else:
-                st.caption("Download the Walk Sheet Excel tracking sheet if you want a ready-to-use file with Contacted, Result, Support Level, Follow-Up, and Notes columns, then upload it back after results are entered.")
-
-            walk_cols = st.columns(2, gap="medium")
-            with walk_cols[0]:
-                if st.button("Prepare Walk Sheet PDF", use_container_width=True):
-                    with st.spinner("Building Walk Sheet PDF from filtered detail shards..."):
-                        pdf_bytes = generate_walk_sheet_pdf_bytes(active)
-                        st.session_state["walk_sheet_pdf_bytes"] = pdf_bytes
-            with walk_cols[1]:
-                if "walk_sheet_pdf_bytes" in st.session_state and st.session_state["walk_sheet_pdf_bytes"]:
-                    st.download_button(
-                        "Download Walk Sheet PDF",
-                        data=st.session_state["walk_sheet_pdf_bytes"],
-                        file_name="candidate_connect_walk_sheet.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                    )
-
-        with report_sections[3]:
-            st.caption("Builds a print-ready Avery 5160-style PDF label sheet from the current mail export universe.")
-            label_mode = st.radio(
-                "Label Mode",
-                ["Householded", "Individual"],
-                horizontal=True,
-                key="mail_labels_mode",
-            )
-            label_cols = st.columns(2, gap="medium")
-            with label_cols[0]:
-                if st.button("Prepare Mailing Labels PDF", use_container_width=True):
-                    with st.spinner("Building mailing labels PDF from filtered detail shards..."):
-                        pdf_bytes = generate_mailing_labels_pdf_bytes(active, householded=(label_mode == "Householded"))
-                        st.session_state["mailing_labels_pdf_bytes"] = pdf_bytes
-                        st.session_state["mailing_labels_pdf_mode"] = label_mode
-            with label_cols[1]:
-                if "mailing_labels_pdf_bytes" in st.session_state and st.session_state["mailing_labels_pdf_bytes"]:
-                    suffix = "householded" if st.session_state.get("mailing_labels_pdf_mode") == "Householded" else "individual"
-                    st.download_button(
-                        "Download Mailing Labels PDF",
-                        data=st.session_state["mailing_labels_pdf_bytes"],
-                        file_name=f"candidate_connect_mailing_labels_{suffix}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                    )
-
-
-    with output_tabs[2]:
-        st.markdown('<div class="small-header">Turf Builder</div>', unsafe_allow_html=True)
-        st.caption("Split the current filtered universe into turf packets and download a ZIP with per-turf CSVs and Walk Sheet PDFs.")
-
-        turf_mode_labels = {
-            "Target Doors": "doors",
-            "Target Voters": "voters",
-            "By Precinct": "precinct",
-            "By Municipality": "municipality",
-        }
-
-        turf_mode = st.selectbox(
-            "Split Method",
-            list(turf_mode_labels.keys()),
-            key="turf_mode_select",
-        )
-
-        if turf_mode in ["Target Doors", "Target Voters"]:
-            default_size = 50 if turf_mode == "Target Doors" else 100
-            turf_target_size = st.slider(
-                "Target Size Per Turf",
-                min_value=10,
-                max_value=500,
-                value=default_size,
-                step=5,
-                key="turf_target_size_slider",
-            )
-            st.caption(
-                "Target Doors uses households/address groups. Target Voters uses total voter records. "
-                "Packets are built sequentially from the current filtered universe."
-            )
-        else:
-            turf_target_size = 0
-            st.caption("This will create one turf per selected precinct or municipality in the current filtered universe.")
-
-        assign_cols = st.columns(3, gap="medium")
-        with assign_cols[0]:
-            turf_packet_label = st.text_input(
-                "Packet Label",
-                value="",
-                placeholder="Week 1 - Team A",
-                key="turf_packet_label_input",
-            )
-        with assign_cols[1]:
-            turf_volunteer_name = st.text_input(
-                "Volunteer Name",
-                value="",
-                placeholder="Volunteer or team name",
-                key="turf_volunteer_name_input",
-            )
-        with assign_cols[2]:
-            turf_packet_date = st.date_input(
-                "Packet Date",
-                value=datetime.now().date(),
-                key="turf_packet_date_input",
-            )
-
-        perf_cols = st.columns([1.2, 1, 1], gap="medium")
-        with perf_cols[0]:
-            turf_output_mode = st.selectbox(
-                "Output Type",
-                ["CSV + Walk Sheet PDFs", "CSV Only (faster)"],
-                key="turf_output_mode_select",
-            )
-        with perf_cols[1]:
-            turf_limit_packets = st.number_input(
-                "Limit Turf Packets",
-                min_value=0,
-                value=0,
-                step=1,
-                help="0 means build all turfs. Use a smaller number for quick tests.",
-                key="turf_limit_packets_input",
-            )
-        with perf_cols[2]:
-            st.markdown("")
-            st.caption("CSV Only is fastest. By Precinct and By Municipality can take much longer when PDFs are included.")
-
-        if turf_output_mode == "CSV + Walk Sheet PDFs" and turf_mode in ["By Precinct", "By Municipality"]:
-            st.warning("This can take longer because the app creates one PDF per turf. For the fastest build, choose CSV Only or set a small turf limit first.")
-
-        turf_cols = st.columns(2, gap="medium")
-        with turf_cols[0]:
-            if st.button("Prepare Turf Packet ZIP", use_container_width=True):
-                spinner_text = "Building turf packet ZIP from filtered detail shards..."
-                if turf_output_mode == "CSV + Walk Sheet PDFs":
-                    spinner_text = "Building turf packets and walk sheets from filtered detail shards..."
-                with st.spinner(spinner_text):
-                    zip_bytes = build_turf_packet_zip(
-                        active_filters=active,
-                        mode=turf_mode_labels[turf_mode],
-                        target_size=turf_target_size,
-                        volunteer_name=turf_volunteer_name,
-                        packet_label=turf_packet_label,
-                        packet_date=turf_packet_date.strftime("%Y-%m-%d") if turf_packet_date else "",
-                        include_walksheets=(turf_output_mode == "CSV + Walk Sheet PDFs"),
-                        max_turfs=int(turf_limit_packets or 0),
-                    )
-                    st.session_state["turf_packet_zip_bytes"] = zip_bytes
-                    st.session_state["turf_packet_mode"] = turf_mode
-                    st.session_state["turf_packet_label"] = turf_packet_label
-                    st.session_state["turf_output_mode"] = turf_output_mode
-                    st.session_state["turf_limit_packets"] = int(turf_limit_packets or 0)
-        with turf_cols[1]:
-            if "turf_packet_zip_bytes" in st.session_state and st.session_state["turf_packet_zip_bytes"]:
-                mode_slug = normalize_export_text(st.session_state.get("turf_packet_mode", "turf_packets")).lower().replace(" ", "_")
-                label_slug = sanitize_filename_part(st.session_state.get("turf_packet_label", ""))
-                output_slug = "csv_only" if st.session_state.get("turf_output_mode") == "CSV Only (faster)" else "csv_and_pdfs"
-                limit_val = int(st.session_state.get("turf_limit_packets", 0) or 0)
-                limit_slug = f"_first_{limit_val}" if limit_val > 0 else ""
-                file_stub = f"candidate_connect_turf_packets_{label_slug}_{mode_slug}_{output_slug}{limit_slug}" if label_slug else f"candidate_connect_turf_packets_{mode_slug}_{output_slug}{limit_slug}"
-                st.download_button(
-                    "Download Turf Packet ZIP",
-                    data=st.session_state["turf_packet_zip_bytes"],
-                    file_name=f"{file_stub}.zip",
-                    mime="application/zip",
-                    use_container_width=True,
+                turf_target_size = 0
+                st.caption("This will create one turf per selected precinct or municipality in the current filtered universe.")
+    
+            assign_cols = st.columns(3, gap="medium")
+            with assign_cols[0]:
+                turf_packet_label = st.text_input(
+                    "Packet Label",
+                    value="",
+                    placeholder="Week 1 - Team A",
+                    key="turf_packet_label_input",
                 )
-
-
-    st.markdown('</div>', unsafe_allow_html=True)
+            with assign_cols[1]:
+                turf_volunteer_name = st.text_input(
+                    "Volunteer Name",
+                    value="",
+                    placeholder="Volunteer or team name",
+                    key="turf_volunteer_name_input",
+                )
+            with assign_cols[2]:
+                turf_packet_date = st.date_input(
+                    "Packet Date",
+                    value=datetime.now().date(),
+                    key="turf_packet_date_input",
+                )
+    
+            perf_cols = st.columns([1.2, 1, 1], gap="medium")
+            with perf_cols[0]:
+                turf_output_mode = st.selectbox(
+                    "Output Type",
+                    ["CSV + Walk Sheet PDFs", "CSV Only (faster)"],
+                    key="turf_output_mode_select",
+                )
+            with perf_cols[1]:
+                turf_limit_packets = st.number_input(
+                    "Limit Turf Packets",
+                    min_value=0,
+                    value=0,
+                    step=1,
+                    help="0 means build all turfs. Use a smaller number for quick tests.",
+                    key="turf_limit_packets_input",
+                )
+            with perf_cols[2]:
+                st.markdown("")
+                st.caption("CSV Only is fastest. By Precinct and By Municipality can take much longer when PDFs are included.")
+    
+            if turf_output_mode == "CSV + Walk Sheet PDFs" and turf_mode in ["By Precinct", "By Municipality"]:
+                st.warning("This can take longer because the app creates one PDF per turf. For the fastest build, choose CSV Only or set a small turf limit first.")
+    
+            turf_cols = st.columns(2, gap="medium")
+            with turf_cols[0]:
+                if st.button("Prepare Turf Packet ZIP", use_container_width=True):
+                    spinner_text = "Building turf packet ZIP from filtered detail shards..."
+                    if turf_output_mode == "CSV + Walk Sheet PDFs":
+                        spinner_text = "Building turf packets and walk sheets from filtered detail shards..."
+                    with st.spinner(spinner_text):
+                        zip_bytes = build_turf_packet_zip(
+                            active_filters=active,
+                            mode=turf_mode_labels[turf_mode],
+                            target_size=turf_target_size,
+                            volunteer_name=turf_volunteer_name,
+                            packet_label=turf_packet_label,
+                            packet_date=turf_packet_date.strftime("%Y-%m-%d") if turf_packet_date else "",
+                            include_walksheets=(turf_output_mode == "CSV + Walk Sheet PDFs"),
+                            max_turfs=int(turf_limit_packets or 0),
+                        )
+                        st.session_state["turf_packet_zip_bytes"] = zip_bytes
+                        st.session_state["turf_packet_mode"] = turf_mode
+                        st.session_state["turf_packet_label"] = turf_packet_label
+                        st.session_state["turf_output_mode"] = turf_output_mode
+                        st.session_state["turf_limit_packets"] = int(turf_limit_packets or 0)
+            with turf_cols[1]:
+                if "turf_packet_zip_bytes" in st.session_state and st.session_state["turf_packet_zip_bytes"]:
+                    mode_slug = normalize_export_text(st.session_state.get("turf_packet_mode", "turf_packets")).lower().replace(" ", "_")
+                    label_slug = sanitize_filename_part(st.session_state.get("turf_packet_label", ""))
+                    output_slug = "csv_only" if st.session_state.get("turf_output_mode") == "CSV Only (faster)" else "csv_and_pdfs"
+                    limit_val = int(st.session_state.get("turf_limit_packets", 0) or 0)
+                    limit_slug = f"_first_{limit_val}" if limit_val > 0 else ""
+                    file_stub = f"candidate_connect_turf_packets_{label_slug}_{mode_slug}_{output_slug}{limit_slug}" if label_slug else f"candidate_connect_turf_packets_{mode_slug}_{output_slug}{limit_slug}"
+                    st.download_button(
+                        "Download Turf Packet ZIP",
+                        data=st.session_state["turf_packet_zip_bytes"],
+                        file_name=f"{file_stub}.zip",
+                        mime="application/zip",
+                        use_container_width=True,
+                    )
+    
+    
+        st.markdown('</div>', unsafe_allow_html=True)
