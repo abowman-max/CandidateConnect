@@ -2637,4 +2637,62 @@ with output_tabs[1]:
                 )
 
 
+with output_tabs[2]:
+    st.markdown('<div class="small-header">Turf Builder</div>', unsafe_allow_html=True)
+    st.caption("Split the current filtered universe into turf packets and download a ZIP with per-turf CSVs and Walk Sheet PDFs.")
+
+    turf_mode_labels = {
+        "Target Doors": "doors",
+        "Target Voters": "voters",
+        "By Precinct": "precinct",
+        "By Municipality": "municipality",
+    }
+
+    turf_mode = st.selectbox(
+        "Split Method",
+        list(turf_mode_labels.keys()),
+        key="turf_mode_select",
+    )
+
+    if turf_mode in ["Target Doors", "Target Voters"]:
+        default_size = 50 if turf_mode == "Target Doors" else 100
+        turf_target_size = st.slider(
+            "Target Size Per Turf",
+            min_value=10,
+            max_value=500,
+            value=default_size,
+            step=5,
+            key="turf_target_size_slider",
+        )
+        st.caption(
+            "Target Doors uses households/address groups. Target Voters uses total voter records. "
+            "Packets are built sequentially from the current filtered universe."
+        )
+    else:
+        turf_target_size = 0
+        st.caption("This will create one turf per selected precinct or municipality in the current filtered universe.")
+
+    turf_cols = st.columns(2, gap="medium")
+    with turf_cols[0]:
+        if st.button("Prepare Turf Packet ZIP", use_container_width=True):
+            with st.spinner("Building turf packets and walk sheets from filtered detail shards..."):
+                zip_bytes = build_turf_packet_zip(
+                    active_filters=active,
+                    mode=turf_mode_labels[turf_mode],
+                    target_size=turf_target_size,
+                )
+                st.session_state["turf_packet_zip_bytes"] = zip_bytes
+                st.session_state["turf_packet_mode"] = turf_mode
+    with turf_cols[1]:
+        if "turf_packet_zip_bytes" in st.session_state and st.session_state["turf_packet_zip_bytes"]:
+            mode_slug = normalize_export_text(st.session_state.get("turf_packet_mode", "turf_packets")).lower().replace(" ", "_")
+            st.download_button(
+                "Download Turf Packet ZIP",
+                data=st.session_state["turf_packet_zip_bytes"],
+                file_name=f"candidate_connect_turf_packets_{mode_slug}.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+
+
 st.markdown('</div>', unsafe_allow_html=True)
