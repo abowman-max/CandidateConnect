@@ -3314,7 +3314,15 @@ dashboard_tabs = st.tabs(["Overview", "Contact Tracking", "Output Center"])
 
 with dashboard_tabs[0]:
     if large_filter_mode:
-        st.info("Overview charts and area breakdown are temporarily paused for very large statewide filters so the app stays stable. Narrow the universe to restore them.")
+        st.info("Summary-only mode is active for this large statewide filter. Narrow by county, municipality, or precinct to restore charts and grouped tables.")
+        summary_only_df = pd.DataFrame([
+            {"Metric": "Voters", "Value": f"{safe_int(metrics.get('voters')):,}"},
+            {"Metric": "Households", "Value": f"{safe_int(metrics.get('households')):,}"},
+            {"Metric": "Emails", "Value": f"{safe_int(metrics.get('emails')):,}"},
+            {"Metric": "Mobiles", "Value": f"{safe_int(metrics.get('mobiles')):,}"},
+            {"Metric": "Unique Precincts", "Value": f"{safe_int(metrics.get('unique_precincts')):,}"},
+        ])
+        st.dataframe(summary_only_df, use_container_width=True, hide_index=True)
     else:
         chart_cols = st.columns(3, gap="medium")
         with chart_cols[0]:
@@ -3346,31 +3354,32 @@ with dashboard_tabs[0]:
 
 with dashboard_tabs[1]:
     if large_filter_mode:
-        st.info("Contact Tracking detail stats are limited for very large filters. Narrow geography or use exports/reports for deeper detail.")
-    tracking_cols = st.columns(2, gap="medium")
-    with tracking_cols[0]:
-        st.markdown('<div class="table-card">', unsafe_allow_html=True)
-        st.markdown('<div class="small-header">Contact Tracking</div>', unsafe_allow_html=True)
-        tracking_summary_df = pd.DataFrame([
-            {"Metric": "Contacted", "Percent": f"{safe_int(followup_stats.get('contacted_pct'))}%", "Voters": f"{safe_int(followup_stats.get('contacted_count')):,}"},
-            {"Metric": "Not Home", "Percent": f"{safe_int(followup_stats.get('nh_pct'))}%", "Voters": f"{safe_int(followup_stats.get('nh_count')):,}"},
-            {"Metric": "Follow-Up", "Percent": f"{safe_int(followup_stats.get('followup_pct'))}%", "Voters": f"{safe_int(followup_stats.get('followup_count')):,}"},
-        ])
-        st.dataframe(tracking_summary_df, use_container_width=True, hide_index=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-    with tracking_cols[1]:
-        st.markdown('<div class="table-card">', unsafe_allow_html=True)
-        st.markdown('<div class="small-header">Support Snapshot</div>', unsafe_allow_html=True)
-        support_summary_df = pd.DataFrame([
-            {"Metric": "Strong Support", "Percent": f"{safe_int(followup_stats.get('strong_pct'))}%", "Voters": f"{safe_int(followup_stats.get('strong_count')):,}"},
-            {"Metric": "Undecided", "Percent": f"{safe_int(followup_stats.get('undecided_pct'))}%", "Voters": f"{safe_int(followup_stats.get('undecided_count')):,}"},
-        ])
-        st.dataframe(support_summary_df, use_container_width=True, hide_index=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.info("Summary-only mode is active for this large statewide filter. Narrow by county, municipality, or precinct to load Contact Tracking details.")
+    else:
+        tracking_cols = st.columns(2, gap="medium")
+        with tracking_cols[0]:
+            st.markdown('<div class="table-card">', unsafe_allow_html=True)
+            st.markdown('<div class="small-header">Contact Tracking</div>', unsafe_allow_html=True)
+            tracking_summary_df = pd.DataFrame([
+                {"Metric": "Contacted", "Percent": f"{safe_int(followup_stats.get('contacted_pct'))}%", "Voters": f"{safe_int(followup_stats.get('contacted_count')):,}"},
+                {"Metric": "Not Home", "Percent": f"{safe_int(followup_stats.get('nh_pct'))}%", "Voters": f"{safe_int(followup_stats.get('nh_count')):,}"},
+                {"Metric": "Follow-Up", "Percent": f"{safe_int(followup_stats.get('followup_pct'))}%", "Voters": f"{safe_int(followup_stats.get('followup_count')):,}"},
+            ])
+            st.dataframe(tracking_summary_df, use_container_width=True, hide_index=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        with tracking_cols[1]:
+            st.markdown('<div class="table-card">', unsafe_allow_html=True)
+            st.markdown('<div class="small-header">Support Snapshot</div>', unsafe_allow_html=True)
+            support_summary_df = pd.DataFrame([
+                {"Metric": "Strong Support", "Percent": f"{safe_int(followup_stats.get('strong_pct'))}%", "Voters": f"{safe_int(followup_stats.get('strong_count')):,}"},
+                {"Metric": "Undecided", "Percent": f"{safe_int(followup_stats.get('undecided_pct'))}%", "Voters": f"{safe_int(followup_stats.get('undecided_count')):,}"},
+            ])
+            st.dataframe(support_summary_df, use_container_width=True, hide_index=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
 with dashboard_tabs[2]:
     if large_filter_mode:
-        st.warning("Large statewide filter mode is active. Core counts are available, but narrow the universe before running heavy outputs like statewide PDFs or turf builds.")
+        st.warning("Summary-only mode is active. Core statewide totals are available, but narrow the universe before running heavy outputs like statewide PDFs, Excel tracking sheets, or turf builds.")
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="small-header">Output Center</div>', unsafe_allow_html=True)
     
