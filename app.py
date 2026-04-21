@@ -1097,10 +1097,11 @@ def assign_turf_ids(df: pd.DataFrame, mode: str, target_size: int) -> pd.DataFra
         out["Turf_Group"] = group_vals
         out["Turf_ID"] = out["Turf_Group"].apply(lambda v: f"Turf_{sanitize_filename_part(v)}")
     else:
+        out["_DoorKey"] = out["_HouseholdKeySafe"]
+        blank_mask = out["_DoorKey"].eq("")
+        out.loc[blank_mask, "_DoorKey"] = out.loc[blank_mask, "Address1"].fillna("").astype(str)
+
         work = out.copy()
-        work["_DoorKey"] = work["_HouseholdKeySafe"]
-        blank_mask = work["_DoorKey"].eq("")
-        work.loc[blank_mask, "_DoorKey"] = work.loc[blank_mask, "Address1"].fillna("").astype(str)
         household_sizes = work.groupby("_DoorKey", dropna=False).size().reset_index(name="_VoterCount")
         household_sizes["_DoorCount"] = 1
         household_sizes["_StreetSort"] = household_sizes["_DoorKey"].astype(str)
