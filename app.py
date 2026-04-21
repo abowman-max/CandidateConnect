@@ -19,6 +19,9 @@ from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib import colors
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from openpyxl.utils import get_column_letter
 
 st.set_page_config(page_title="Candidate Connect", layout="wide")
 
@@ -1394,6 +1397,86 @@ def get_street_results_template_csv_bytes():
     template_df = pd.DataFrame(columns=["PA ID Number", "F", "A", "U", "NH", "Yard Sign", "Notes"])
     return template_df.to_csv(index=False).encode("utf-8")
 
+
+def get_street_results_sheet_bytes(active_filters):
+    street_df = build_street_list_dataframe(active_filters)
+    street_df = apply_uploaded_street_result_filters(street_df)
+
+    export_cols = [
+        "Precinct", "StreetGroup", "AddressLine", "FullName", "Phone", "Party", "Sex", "Age",
+        "PA ID Number", "F", "A", "U", "NH", "Yard Sign", "Notes"
+    ]
+    for col in export_cols:
+        if col not in street_df.columns:
+            street_df[col] = ""
+
+    export_df = street_df[export_cols].copy().rename(columns={
+        "StreetGroup": "Street",
+        "AddressLine": "Address",
+        "FullName": "Name",
+        "Sex": "Gender",
+    })
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Street List Tracking"
+
+    ws["A1"] = "Candidate Connect Street List Tracking Sheet"
+    ws["A2"] = f"Generated {datetime.now().strftime('%Y-%m-%d %I:%M %p')}"
+    ws["A3"] = "Enter X in F, A, U, NH, and Yard Sign. Use Notes for anything important from the candidate's conversation."
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(export_df.columns))
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(export_df.columns))
+    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=len(export_df.columns))
+    ws["A1"].font = Font(bold=True, size=14, color="FFFFFF")
+    ws["A1"].fill = PatternFill("solid", fgColor="7A1523")
+    ws["A1"].alignment = Alignment(horizontal="center")
+    ws["A2"].font = Font(italic=True, size=10)
+    ws["A3"].font = Font(size=10)
+
+    headers = export_df.columns.tolist()
+    header_row = 5
+    thin = Side(style="thin", color="D7B7BC")
+    header_fill = PatternFill("solid", fgColor="9F2032")
+    check_fill = PatternFill("solid", fgColor="F9E8EA")
+
+    for c, header in enumerate(headers, start=1):
+        cell = ws.cell(row=header_row, column=c, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    for r, row in enumerate(export_df.itertuples(index=False), start=header_row + 1):
+        for c, value in enumerate(row, start=1):
+            cell = ws.cell(row=r, column=c, value=value)
+            cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            header = headers[c - 1]
+            if header in {"F", "A", "U", "NH", "Yard Sign"}:
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.fill = check_fill
+                cell.font = Font(bold=True)
+            elif header == "Notes":
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+            else:
+                cell.alignment = Alignment(vertical="center")
+
+    widths = {
+        "Precinct": 18, "Street": 24, "Address": 14, "Name": 24, "Phone": 16, "Party": 8,
+        "Gender": 8, "Age": 8, "PA ID Number": 16, "F": 5, "A": 5, "U": 5, "NH": 6,
+        "Yard Sign": 10, "Notes": 28
+    }
+    for c, header in enumerate(headers, start=1):
+        ws.column_dimensions[get_column_letter(c)].width = widths.get(header, 14)
+
+    ws.freeze_panes = "A6"
+    ws.auto_filter.ref = f"A{header_row}:{get_column_letter(len(headers))}{max(header_row, ws.max_row)}"
+    for r in range(header_row + 1, ws.max_row + 1):
+        ws.row_dimensions[r].height = 18
+
+    out = BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
 def _normalized_col_lookup(columns):
     lookup = {}
     for col in columns:
@@ -1496,8 +1579,8 @@ def build_street_list_dataframe(active_filters):
     df = merge_uploaded_street_results_into_detail_df(df)
     if df.empty:
         return pd.DataFrame(columns=[
-            "Precinct","StreetGroup","AddressLine","FullName","Phone","Party","Sex","Age",
-            "F","A","U","NH","Yard Sign","MB_Perm","HouseNumSort","AptSort"
+            "Precinct","StreetGroup","AddressLine","FullName","Phone","Party","Sex","Age","PA ID Number",
+            "F","A","U","NH","Yard Sign","Notes","MB_Perm","HouseNumSort","AptSort"
         ])
 
     precinct_col = first_existing_detail(df.columns.tolist(), ["Precinct"])
@@ -1507,6 +1590,7 @@ def build_street_list_dataframe(active_filters):
     sex_col = first_existing_detail(df.columns.tolist(), ["Gender", "Sex"])
     age_col = first_existing_detail(df.columns.tolist(), ["Age"])
     party_col = first_existing_detail(df.columns.tolist(), ["Party"])
+    pa_id_col = first_existing_detail(df.columns.tolist(), ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "State Voter ID", "Voter ID", "VoterID"])
     mb_perm_col = first_existing_detail(df.columns.tolist(), ["MB_PERM", "MB_Perm", "MB_Pern"])
 
     out = pd.DataFrame()
@@ -1522,11 +1606,13 @@ def build_street_list_dataframe(active_filters):
     out["Party"] = df[party_col].apply(normalize_export_text) if party_col else ""
     out["Sex"] = df[sex_col].apply(normalize_export_text) if sex_col else ""
     out["Age"] = df[age_col].apply(lambda v: normalize_numeric_string(v)) if age_col else ""
+    out["PA ID Number"] = df[pa_id_col].apply(normalize_numeric_string) if pa_id_col else ""
     out["F"] = df["F"].apply(normalize_tracking_mark) if "F" in df.columns else ""
     out["A"] = df["A"].apply(normalize_tracking_mark) if "A" in df.columns else ""
     out["U"] = df["U"].apply(normalize_tracking_mark) if "U" in df.columns else ""
     out["NH"] = df["NH"].apply(normalize_tracking_mark) if "NH" in df.columns else ""
     out["Yard Sign"] = df["Yard Sign"].apply(normalize_tracking_mark) if "Yard Sign" in df.columns else ""
+    out["Notes"] = df["Notes"].apply(normalize_export_text) if "Notes" in df.columns else ""
     out["MB_Perm"] = df[mb_perm_col].apply(normalize_mb_perm_value) if mb_perm_col else ""
     out["HouseNumSort"] = house_vals.apply(parse_house_number)
     out["AptSort"] = apt_vals.apply(parse_apartment_sort)
@@ -2028,8 +2114,8 @@ def build_street_list_dataframe_from_detail_df(df: pd.DataFrame):
     df = merge_uploaded_street_results_into_detail_df(df)
     if df is None or df.empty:
         return pd.DataFrame(columns=[
-            "Precinct","StreetGroup","AddressLine","FullName","Phone","Party","Sex","Age",
-            "F","A","U","NH","Yard Sign","MB_Perm","HouseNumSort","AptSort"
+            "Precinct","StreetGroup","AddressLine","FullName","Phone","Party","Sex","Age","PA ID Number",
+            "F","A","U","NH","Yard Sign","Notes","MB_Perm","HouseNumSort","AptSort"
         ])
 
     precinct_col = first_existing_detail(df.columns.tolist(), ["Precinct"])
@@ -2039,6 +2125,7 @@ def build_street_list_dataframe_from_detail_df(df: pd.DataFrame):
     sex_col = first_existing_detail(df.columns.tolist(), ["Gender", "Sex"])
     age_col = first_existing_detail(df.columns.tolist(), ["Age"])
     party_col = first_existing_detail(df.columns.tolist(), ["Party"])
+    pa_id_col = first_existing_detail(df.columns.tolist(), ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "State Voter ID", "Voter ID", "VoterID"])
     mb_perm_col = first_existing_detail(df.columns.tolist(), ["MB_PERM", "MB_Perm", "MB_Pern"])
 
     out = pd.DataFrame()
@@ -2054,11 +2141,13 @@ def build_street_list_dataframe_from_detail_df(df: pd.DataFrame):
     out["Party"] = df[party_col].apply(normalize_export_text) if party_col else ""
     out["Sex"] = df[sex_col].apply(normalize_export_text) if sex_col else ""
     out["Age"] = df[age_col].apply(lambda v: normalize_numeric_string(v)) if age_col else ""
+    out["PA ID Number"] = df[pa_id_col].apply(normalize_numeric_string) if pa_id_col else ""
     out["F"] = df["F"].apply(normalize_tracking_mark) if "F" in df.columns else ""
     out["A"] = df["A"].apply(normalize_tracking_mark) if "A" in df.columns else ""
     out["U"] = df["U"].apply(normalize_tracking_mark) if "U" in df.columns else ""
     out["NH"] = df["NH"].apply(normalize_tracking_mark) if "NH" in df.columns else ""
     out["Yard Sign"] = df["Yard Sign"].apply(normalize_tracking_mark) if "Yard Sign" in df.columns else ""
+    out["Notes"] = df["Notes"].apply(normalize_export_text) if "Notes" in df.columns else ""
     out["MB_Perm"] = df[mb_perm_col].apply(normalize_mb_perm_value) if mb_perm_col else ""
     out["HouseNumSort"] = house_vals.apply(parse_house_number)
     out["AptSort"] = apt_vals.apply(parse_apartment_sort)
@@ -2730,7 +2819,7 @@ with output_tabs[1]:
                 )
 
     with report_sections[1]:
-        st.caption("Builds a compact precinct-grouped PDF and can refill F, A, U, NH, and Yard Sign boxes from an uploaded street-results CSV matched by PA ID.")
+        st.caption("Builds a compact precinct-grouped PDF and also supports a Street List Excel tracking sheet so the same list can be used to record F, A, U, NH, and Yard Sign results.")
         upload_cols = st.columns([1, 1.2, 1], gap="medium")
         with upload_cols[0]:
             st.download_button(
@@ -2740,18 +2829,28 @@ with output_tabs[1]:
                 mime="text/csv",
                 use_container_width=True,
             )
+            st.download_button(
+                "Download Street List Excel Tracking Sheet",
+                data=get_street_results_sheet_bytes(active),
+                file_name="candidate_connect_street_list_tracking.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
         with upload_cols[1]:
             uploaded_results_file = st.file_uploader(
-                "Upload Street Results CSV",
-                type=["csv"],
+                "Upload Street Results File",
+                type=["csv", "xlsx"],
                 key="street_results_upload",
-                help="Upload candidate street-list results using PA ID Number plus F, A, U, NH, and Yard Sign columns.",
+                help="Upload either the Street List Excel tracking sheet or a CSV using PA ID Number plus F, A, U, NH, and Yard Sign columns.",
             )
             if uploaded_results_file is not None:
                 upload_sig = f"{uploaded_results_file.name}:{getattr(uploaded_results_file, 'size', 0)}"
                 if st.session_state.get("street_results_upload_sig") != upload_sig:
                     try:
-                        raw_upload_df = pd.read_csv(uploaded_results_file, dtype=str).fillna("")
+                        if str(uploaded_results_file.name).lower().endswith(".xlsx"):
+                            raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str).fillna("")
+                        else:
+                            raw_upload_df = pd.read_csv(uploaded_results_file, dtype=str).fillna("")
                         standardized_upload_df = standardize_uploaded_street_results(raw_upload_df)
                         if standardized_upload_df.empty:
                             st.warning("No usable PA ID Number column was found in the uploaded file.")
@@ -2761,7 +2860,7 @@ with output_tabs[1]:
                             st.session_state["street_results_upload_name"] = uploaded_results_file.name
                             st.success(f"Loaded {len(standardized_upload_df):,} street-result rows.")
                     except Exception as exc:
-                        st.error(f"Could not read the street results CSV: {exc}")
+                        st.error(f"Could not read the street results file: {exc}")
         with upload_cols[2]:
             loaded_results = st.session_state.get("street_results_df")
             if isinstance(loaded_results, pd.DataFrame) and not loaded_results.empty:
@@ -2778,7 +2877,7 @@ with output_tabs[1]:
 
         loaded_results = st.session_state.get("street_results_df")
         if isinstance(loaded_results, pd.DataFrame) and not loaded_results.empty:
-            st.caption("These tracking filters only affect the Street List PDF, so you can reprint candidate follow-up lists without changing the dashboard counts.")
+            st.caption("These tracking filters only affect the Street List outputs, so you can reprint or re-export candidate follow-up lists without changing the dashboard counts.")
             filter_defaults = st.session_state.get("street_results_filters", {}) or {}
             street_filter_cols = st.columns(5, gap="small")
             street_results_filters = {}
@@ -2792,7 +2891,7 @@ with output_tabs[1]:
                     )
             st.session_state["street_results_filters"] = street_results_filters
         else:
-            st.caption("Upload a street-results CSV if you want the candidate's F, A, U, NH, and Yard Sign marks to refill on the Street List or filter the Street List PDF.")
+            st.caption("Download the Street List Excel tracking sheet if you want a ready-to-use file with F, A, U, NH, Yard Sign, and Notes columns, then upload it back after results are entered.")
 
         pdf_cols = st.columns(2, gap="medium")
         with pdf_cols[0]:

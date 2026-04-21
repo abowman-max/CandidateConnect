@@ -5,3 +5,5 @@ requests
 streamlit
 reportlab
 boto3
+
+openpyxl
