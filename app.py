@@ -632,6 +632,19 @@ def normalize_numeric_string(val):
         s = s.split(".")[0]
     return s
 
+
+def safe_int(val) -> int:
+    try:
+        if val is None:
+            return 0
+        if isinstance(val, str) and val.strip().lower() in {"", "nan", "none"}:
+            return 0
+        if pd.isna(val):
+            return 0
+        return int(float(val))
+    except Exception:
+        return 0
+
 def clean_zip_value(val):
     s = normalize_numeric_string(val)
     if not s:
@@ -3226,11 +3239,11 @@ with st.spinner("Running DuckDB queries..."):
 
 metric_cols = st.columns(5, gap="small")
 metric_values = [
-    ("Voters", f"{int(metrics.get('voters') or 0):,}"),
-    ("Households", f"{int(metrics.get('households') or 0):,}"),
-    ("Emails", f"{int(metrics.get('emails') or 0):,}"),
-    ("Mobiles", f"{int(metrics.get('mobiles') or 0):,}"),
-    ("Unique Precincts", f"{int(metrics.get('unique_precincts') or 0):,}"),
+    ("Voters", f"{safe_int(metrics.get('voters')):,}"),
+    ("Households", f"{safe_int(metrics.get('households')):,}"),
+    ("Emails", f"{safe_int(metrics.get('emails')):,}"),
+    ("Mobiles", f"{safe_int(metrics.get('mobiles')):,}"),
+    ("Unique Precincts", f"{safe_int(metrics.get('unique_precincts')):,}"),
 ]
 for col, (label, value) in zip(metric_cols, metric_values):
     with col:
@@ -3238,10 +3251,10 @@ for col, (label, value) in zip(metric_cols, metric_values):
 
 campaign_cols = st.columns(4, gap="small")
 campaign_values = [
-    ("Contacted", f"{int(followup_stats.get('contacted_pct') or 0)}%", f"{int(followup_stats.get('contacted_count') or 0):,} voters"),
-    ("Not Home", f"{int(followup_stats.get('nh_pct') or 0)}%", f"{int(followup_stats.get('nh_count') or 0):,} voters"),
-    ("Follow-Up", f"{int(followup_stats.get('followup_pct') or 0)}%", f"{int(followup_stats.get('followup_count') or 0):,} voters"),
-    ("Undecided", f"{int(followup_stats.get('undecided_pct') or 0)}%", f"{int(followup_stats.get('undecided_count') or 0):,} voters"),
+    ("Contacted", f"{safe_int(followup_stats.get('contacted_pct'))}%", f"{safe_int(followup_stats.get('contacted_count')):,} voters"),
+    ("Not Home", f"{safe_int(followup_stats.get('nh_pct'))}%", f"{safe_int(followup_stats.get('nh_count')):,} voters"),
+    ("Follow-Up", f"{safe_int(followup_stats.get('followup_pct'))}%", f"{safe_int(followup_stats.get('followup_count')):,} voters"),
+    ("Undecided", f"{safe_int(followup_stats.get('undecided_pct'))}%", f"{safe_int(followup_stats.get('undecided_count')):,} voters"),
 ]
 for col, (label, value, subvalue) in zip(campaign_cols, campaign_values):
     with col:
@@ -3289,9 +3302,9 @@ with dashboard_tabs[1]:
         st.markdown('<div class="table-card">', unsafe_allow_html=True)
         st.markdown('<div class="small-header">Contact Tracking</div>', unsafe_allow_html=True)
         tracking_summary_df = pd.DataFrame([
-            {"Metric": "Contacted", "Percent": f"{int(followup_stats.get('contacted_pct') or 0)}%", "Voters": f"{int(followup_stats.get('contacted_count') or 0):,}"},
-            {"Metric": "Not Home", "Percent": f"{int(followup_stats.get('nh_pct') or 0)}%", "Voters": f"{int(followup_stats.get('nh_count') or 0):,}"},
-            {"Metric": "Follow-Up", "Percent": f"{int(followup_stats.get('followup_pct') or 0)}%", "Voters": f"{int(followup_stats.get('followup_count') or 0):,}"},
+            {"Metric": "Contacted", "Percent": f"{safe_int(followup_stats.get('contacted_pct'))}%", "Voters": f"{safe_int(followup_stats.get('contacted_count')):,}"},
+            {"Metric": "Not Home", "Percent": f"{safe_int(followup_stats.get('nh_pct'))}%", "Voters": f"{safe_int(followup_stats.get('nh_count')):,}"},
+            {"Metric": "Follow-Up", "Percent": f"{safe_int(followup_stats.get('followup_pct'))}%", "Voters": f"{safe_int(followup_stats.get('followup_count')):,}"},
         ])
         st.dataframe(tracking_summary_df, use_container_width=True, hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
@@ -3299,8 +3312,8 @@ with dashboard_tabs[1]:
         st.markdown('<div class="table-card">', unsafe_allow_html=True)
         st.markdown('<div class="small-header">Support Snapshot</div>', unsafe_allow_html=True)
         support_summary_df = pd.DataFrame([
-            {"Metric": "Strong Support", "Percent": f"{int(followup_stats.get('strong_pct') or 0)}%", "Voters": f"{int(followup_stats.get('strong_count') or 0):,}"},
-            {"Metric": "Undecided", "Percent": f"{int(followup_stats.get('undecided_pct') or 0)}%", "Voters": f"{int(followup_stats.get('undecided_count') or 0):,}"},
+            {"Metric": "Strong Support", "Percent": f"{safe_int(followup_stats.get('strong_pct'))}%", "Voters": f"{safe_int(followup_stats.get('strong_count')):,}"},
+            {"Metric": "Undecided", "Percent": f"{safe_int(followup_stats.get('undecided_pct'))}%", "Voters": f"{safe_int(followup_stats.get('undecided_count')):,}"},
         ])
         st.dataframe(support_summary_df, use_container_width=True, hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
