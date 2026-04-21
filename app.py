@@ -3194,8 +3194,8 @@ with st.sidebar:
 
 
 if not st.session_state.data_loaded:
-    zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Landlines", "0"), ("Mobiles", "0"), ("Unique Counties", "0"), ("Unique Precincts", "0")]
-    metric_cols = st.columns(7, gap="small")
+    zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Mobiles", "0"), ("Unique Precincts", "0")]
+    metric_cols = st.columns(5, gap="small")
     for col, (label, value) in zip(metric_cols, zeros):
         with col:
             st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
@@ -3204,8 +3204,8 @@ if not st.session_state.data_loaded:
     st.stop()
 
 if not st.session_state.filters_applied:
-    zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Landlines", "0"), ("Mobiles", "0"), ("Unique Counties", "0"), ("Unique Precincts", "0")]
-    metric_cols = st.columns(7, gap="small")
+    zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Mobiles", "0"), ("Unique Precincts", "0")]
+    metric_cols = st.columns(5, gap="small")
     for col, (label, value) in zip(metric_cols, zeros):
         with col:
             st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
@@ -3224,38 +3224,38 @@ with st.spinner("Running DuckDB queries..."):
     age_df = query_chart(active, columns, "_AgeRange", "Age Range")
     area_choices = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in columns]
 
-metric_cols = st.columns(7, gap="small")
+metric_cols = st.columns(5, gap="small")
 metric_values = [
     ("Voters", f"{int(metrics.get('voters') or 0):,}"),
     ("Households", f"{int(metrics.get('households') or 0):,}"),
     ("Emails", f"{int(metrics.get('emails') or 0):,}"),
-    ("Landlines", f"{int(metrics.get('landlines') or 0):,}"),
     ("Mobiles", f"{int(metrics.get('mobiles') or 0):,}"),
-    ("Unique Counties", f"{int(metrics.get('unique_counties') or 0):,}"),
     ("Unique Precincts", f"{int(metrics.get('unique_precincts') or 0):,}"),
 ]
 for col, (label, value) in zip(metric_cols, metric_values):
     with col:
         st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
 
-followup_cols = st.columns(5, gap="small")
-followup_values = [
-    ("Contacted", f"{int(followup_stats.get('contacted_pct') or 0)}%", f"{int(followup_stats.get('contacted_count') or 0):,}"),
-    ("Not Home", f"{int(followup_stats.get('nh_pct') or 0)}%", f"{int(followup_stats.get('nh_count') or 0):,}"),
-    ("Follow-Up", f"{int(followup_stats.get('followup_pct') or 0)}%", f"{int(followup_stats.get('followup_count') or 0):,}"),
-    ("Strong Support", f"{int(followup_stats.get('strong_pct') or 0)}%", f"{int(followup_stats.get('strong_count') or 0):,}"),
-    ("Undecided", f"{int(followup_stats.get('undecided_pct') or 0)}%", f"{int(followup_stats.get('undecided_count') or 0):,}"),
+campaign_cols = st.columns(4, gap="small")
+campaign_values = [
+    ("Contacted", f"{int(followup_stats.get('contacted_pct') or 0)}%", f"{int(followup_stats.get('contacted_count') or 0):,} voters"),
+    ("Not Home", f"{int(followup_stats.get('nh_pct') or 0)}%", f"{int(followup_stats.get('nh_count') or 0):,} voters"),
+    ("Follow-Up", f"{int(followup_stats.get('followup_pct') or 0)}%", f"{int(followup_stats.get('followup_count') or 0):,} voters"),
+    ("Undecided", f"{int(followup_stats.get('undecided_pct') or 0)}%", f"{int(followup_stats.get('undecided_count') or 0):,} voters"),
 ]
-for col, (label, value, subvalue) in zip(followup_cols, followup_values):
+for col, (label, value, subvalue) in zip(campaign_cols, campaign_values):
     with col:
         st.markdown(
-            f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div><div class="tiny-muted">{subvalue} voters</div></div>',
+            f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div><div class="tiny-muted">{subvalue}</div></div>',
             unsafe_allow_html=True
         )
 
 divider()
 
-chart_cols = st.columns(3, gap="medium")
+dashboard_tabs = st.tabs(["Overview", "Contact Tracking", "Output Center"])
+
+with dashboard_tabs[0]:
+    chart_cols = st.columns(3, gap="medium")
 with chart_cols[0]:
     st.markdown('<div class="chart-card">', unsafe_allow_html=True)
     pie_chart_with_table(party_df, "Party", "Count", "Party Breakdown", "party")
