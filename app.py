@@ -501,7 +501,17 @@ def get_basic_options(columns):
 def query_metrics(active, columns):
     con = get_conn()
     where_sql, params = current_filter_clause(active, columns)
-    return con.execute(
+
+    county_expr = (
+        f"count(DISTINCT {quote_ident('County')}) FILTER (WHERE {quote_ident('County')} IS NOT NULL)"
+        if 'County' in columns else '0'
+    )
+    precinct_expr = (
+        f"count(DISTINCT {quote_ident('Precinct')}) FILTER (WHERE {quote_ident('Precinct')} IS NOT NULL)"
+        if 'Precinct' in columns else '0'
+    )
+
+    row = con.execute(
         f"""
         SELECT
             count(*) AS voters,
@@ -512,13 +522,34 @@ def query_metrics(active, columns):
             sum(CASE WHEN _HasEmail THEN 1 ELSE 0 END) AS emails,
             sum(CASE WHEN _HasLandline THEN 1 ELSE 0 END) AS landlines,
             sum(CASE WHEN _HasMobile THEN 1 ELSE 0 END) AS mobiles,
-            count(DISTINCT {quote_ident("County")}) FILTER (WHERE {quote_ident("County")} IS NOT NULL) AS unique_counties,
-            count(DISTINCT {quote_ident("Precinct")}) FILTER (WHERE {quote_ident("Precinct")} IS NOT NULL) AS unique_precincts
+            {county_expr} AS unique_counties,
+            {precinct_expr} AS unique_precincts
         FROM voters
         {where_sql}
         """,
         params,
-    ).df().iloc[0].to_dict()
+    ).fetchone()
+
+    if row is None:
+        return {
+            'voters': 0,
+            'households': 0,
+            'emails': 0,
+            'landlines': 0,
+            'mobiles': 0,
+            'unique_counties': 0,
+            'unique_precincts': 0,
+        }
+
+    return {
+        'voters': int(row[0] or 0),
+        'households': int(row[1] or 0),
+        'emails': int(row[2] or 0),
+        'landlines': int(row[3] or 0),
+        'mobiles': int(row[4] or 0),
+        'unique_counties': int(row[5] or 0),
+        'unique_precincts': int(row[6] or 0),
+    }
 
 def query_chart(active, columns, group_expr, label, not_blank=True):
     con = get_conn()
