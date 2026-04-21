@@ -2849,6 +2849,14 @@ with output_tabs[1]:
                     try:
                         if str(uploaded_results_file.name).lower().endswith(".xlsx"):
                             raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str).fillna("")
+                            normalized_cols = [re.sub(r"[^a-z0-9]+", "", str(c).strip().lower()) for c in raw_upload_df.columns]
+                            if "paidnumber" not in normalized_cols:
+                                try:
+                                    raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str, header=4).fillna("")
+                                except Exception:
+                                    uploaded_results_file.seek(0)
+                                    raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str).fillna("")
+                            uploaded_results_file.seek(0)
                         else:
                             raw_upload_df = pd.read_csv(uploaded_results_file, dtype=str).fillna("")
                         standardized_upload_df = standardize_uploaded_street_results(raw_upload_df)
