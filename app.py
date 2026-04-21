@@ -502,6 +502,9 @@ def get_basic_options(columns):
     return options
 
 def query_metrics(active, columns):
+    if has_global_followup_filters(active):
+        return _query_metrics_from_detail(active, columns)
+
     con = get_conn()
     where_sql, params = current_filter_clause(active, columns)
     return con.execute(
@@ -524,6 +527,9 @@ def query_metrics(active, columns):
     ).df().iloc[0].to_dict()
 
 def query_chart(active, columns, group_expr, label, not_blank=True):
+    if has_global_followup_filters(active):
+        return _query_chart_from_detail(active, group_expr, label, not_blank=not_blank)
+
     con = get_conn()
     where_sql, params = current_filter_clause(active, columns)
     extra = f" AND {group_expr} IS NOT NULL AND cast({group_expr} as varchar) <> ''" if not_blank else ""
@@ -540,6 +546,9 @@ def query_chart(active, columns, group_expr, label, not_blank=True):
     ).df()
 
 def query_area_summary(active, columns, area_col):
+    if has_global_followup_filters(active):
+        return _query_area_summary_from_detail(active, area_col)
+
     con = get_conn()
     where_sql, params = current_filter_clause(active, columns)
     return con.execute(
@@ -956,7 +965,10 @@ def build_detail_export_sql(detail_paths, active_filters):
 def fetch_filtered_detail(active_filters):
     detail_paths, _ = ensure_detail_shards()
     sql, params = build_detail_export_sql(detail_paths, active_filters)
-    return get_conn().execute(sql, params).df()
+    df = get_conn().execute(sql, params).df()
+    if has_global_followup_filters(active_filters):
+        df = apply_global_followup_filters_df(df, active_filters)
+    return df
 
 def build_filtered_csv_export(active_filters):
     df = fetch_filtered_detail(active_filters).copy()
@@ -1391,6 +1403,170 @@ def build_filter_summary_lines(active_filters: dict) -> list[str]:
         if val and val != "All":
             lines.append(f"{label}: {val}")
     return lines or ["No additional filters selected"]
+
+
+def summarize_universe_filters(active_filters: dict) -> str:
+    parts = build_filter_summary_lines(active_filters)
+    contact_status = normalize_export_text(active_filters.get("contact_status", "All"))
+    if contact_status and contact_status != "All":
+        parts.append(f"Contact Status: {contact_status}")
+    nh_status = normalize_export_text(active_filters.get("global_nh", "All"))
+    if nh_status and nh_status != "All":
+        parts.append(f"Not Home: {nh_status}")
+    follow_up_status = normalize_export_text(active_filters.get("global_follow_up", "All"))
+    if follow_up_status and follow_up_status != "All":
+        parts.append(f"Follow-Up: {follow_up_status}")
+    support_level = normalize_export_text(active_filters.get("global_support_level", "All"))
+    if support_level and support_level != "All":
+        parts.append(f"Support Level: {support_level}")
+    return " | ".join(parts) if parts else "No filters"
+
+def get_global_support_level_options() -> list[str]:
+    uploaded = st.session_state.get("walk_results_df")
+    if isinstance(uploaded, pd.DataFrame) and not uploaded.empty and "Support Level" in uploaded.columns:
+        vals = sorted({normalize_export_text(v) for v in uploaded["Support Level"].tolist() if normalize_export_text(v)})
+        return ["All"] + vals
+    return ["All", "Strong", "Lean", "Undecided", "Oppose"]
+
+def has_global_followup_filters(active_filters: dict) -> bool:
+    if not isinstance(active_filters, dict):
+        return False
+    return any(
+        normalize_export_text(active_filters.get(key, "All")) not in {"", "All"}
+        for key in ["contact_status", "global_nh", "global_follow_up", "global_support_level"]
+    )
+
+def apply_global_followup_filters_df(df: pd.DataFrame, active_filters: dict) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    out = merge_uploaded_street_results_into_detail_df(out)
+    out = merge_uploaded_walk_results_into_detail_df(out)
+
+    for field in ["F", "A", "U", "NH", "Yard Sign", "Notes", "Contacted", "Result", "Support Level", "Follow-Up", "Walk Notes"]:
+        if field not in out.columns:
+            out[field] = ""
+
+    street_contact_mask = (
+        out["F"].astype(str).str.strip().ne("") |
+        out["A"].astype(str).str.strip().ne("") |
+        out["U"].astype(str).str.strip().ne("") |
+        out["NH"].astype(str).str.strip().ne("") |
+        out["Yard Sign"].astype(str).str.strip().ne("") |
+        out["Notes"].astype(str).str.strip().ne("")
+    )
+    walk_contact_mask = (
+        out["Contacted"].astype(str).str.strip().ne("") |
+        out["Result"].astype(str).str.strip().ne("") |
+        out["Support Level"].astype(str).str.strip().ne("") |
+        out["Follow-Up"].astype(str).str.strip().ne("") |
+        out["Walk Notes"].astype(str).str.strip().ne("")
+    )
+    contact_mask = street_contact_mask | walk_contact_mask
+
+    contact_status = normalize_export_text(active_filters.get("contact_status", "All"))
+    if contact_status == "Contacted":
+        out = out[contact_mask]
+    elif contact_status == "Not Contacted":
+        out = out[~contact_mask]
+
+    nh_status = normalize_export_text(active_filters.get("global_nh", "All"))
+    nh_mask = (
+        out["NH"].astype(str).str.strip().ne("") |
+        out["Result"].astype(str).str.upper().str.replace(" ", "", regex=False).isin(["NOTHOME", "NH"])
+    )
+    if nh_status == "Yes":
+        out = out[nh_mask]
+    elif nh_status == "No":
+        out = out[~nh_mask]
+
+    follow_up_status = normalize_export_text(active_filters.get("global_follow_up", "All"))
+    follow_up_mask = out["Follow-Up"].astype(str).str.strip().ne("")
+    if follow_up_status == "Yes":
+        out = out[follow_up_mask]
+    elif follow_up_status == "No":
+        out = out[~follow_up_mask]
+
+    support_level = normalize_export_text(active_filters.get("global_support_level", "All"))
+    if support_level and support_level != "All":
+        out = out[
+            out["Support Level"].astype(str).str.strip().str.casefold() == support_level.casefold()
+        ]
+
+    return out
+
+def _query_metrics_from_detail(active_filters, columns):
+    df = fetch_filtered_detail(active_filters)
+    if df is None or df.empty:
+        return {
+            "voters": 0,
+            "households": 0,
+            "emails": 0,
+            "landlines": 0,
+            "mobiles": 0,
+            "unique_counties": 0,
+            "unique_precincts": 0,
+        }
+
+    hh = df["_HouseholdKey"].fillna("").astype(str) if "_HouseholdKey" in df.columns else pd.Series([""] * len(df))
+    households = int(hh.replace("", pd.NA).dropna().nunique() + hh.eq("").sum())
+    return {
+        "voters": int(len(df)),
+        "households": households,
+        "emails": int(df.get("_HasEmail", pd.Series([False] * len(df))).fillna(False).astype(bool).sum()),
+        "landlines": int(df.get("_HasLandline", pd.Series([False] * len(df))).fillna(False).astype(bool).sum()),
+        "mobiles": int(df.get("_HasMobile", pd.Series([False] * len(df))).fillna(False).astype(bool).sum()),
+        "unique_counties": int(df["County"].fillna("").astype(str).replace("", pd.NA).dropna().nunique()) if "County" in df.columns else 0,
+        "unique_precincts": int(df["Precinct"].fillna("").astype(str).replace("", pd.NA).dropna().nunique()) if "Precinct" in df.columns else 0,
+    }
+
+def _query_chart_from_detail(active_filters, group_expr, label, not_blank=True):
+    df = fetch_filtered_detail(active_filters)
+    if df is None or df.empty:
+        return pd.DataFrame(columns=[label, "Count"])
+
+    series_name = None
+    if group_expr in df.columns:
+        series_name = group_expr
+    elif group_expr == "_PartyNorm" and "_PartyNorm" in df.columns:
+        series_name = "_PartyNorm"
+    elif group_expr == "_Gender" and "_Gender" in df.columns:
+        series_name = "_Gender"
+    elif group_expr == "_AgeRange" and "_AgeRange" in df.columns:
+        series_name = "_AgeRange"
+
+    if series_name is None:
+        return pd.DataFrame(columns=[label, "Count"])
+
+    ser = df[series_name]
+    if not_blank:
+        ser = ser[ser.fillna("").astype(str).str.strip() != ""]
+    out = ser.fillna("(Blank)").astype(str).value_counts(dropna=False).reset_index()
+    out.columns = [label, "Count"]
+    return out
+
+def _query_area_summary_from_detail(active_filters, area_col):
+    df = fetch_filtered_detail(active_filters)
+    if df is None or df.empty or area_col not in df.columns:
+        return pd.DataFrame(columns=[area_col, "Individuals", "Households"])
+
+    temp = df.copy()
+    temp[area_col] = temp[area_col].fillna("(Blank)").astype(str)
+    hh = temp["_HouseholdKey"].fillna("").astype(str) if "_HouseholdKey" in temp.columns else pd.Series([""] * len(temp))
+    temp["_HouseholdKeySafe"] = hh
+    rows = []
+    for area_val, grp in temp.groupby(area_col, dropna=False):
+        grp_hh = grp["_HouseholdKeySafe"]
+        households = int(grp_hh.replace("", pd.NA).dropna().nunique() + grp_hh.eq("").sum())
+        rows.append({
+            area_col: area_val if normalize_export_text(area_val) else "(Blank)",
+            "Individuals": int(len(grp)),
+            "Households": households,
+        })
+    out = pd.DataFrame(rows).sort_values(["Individuals", area_col], ascending=[False, True]).reset_index(drop=True)
+    return out
+
 
 
 def get_street_results_template_csv_bytes():
@@ -2768,6 +2944,37 @@ with st.sidebar:
                 has_landline = st.selectbox("Landline", landline_opts, index=landline_opts.index(st.session_state.active_filters.get("has_landline", "All")))
                 has_mobile = st.selectbox("Mobile", mobile_opts, index=mobile_opts.index(st.session_state.active_filters.get("has_mobile", "All")))
 
+            with st.expander("Smart Follow-Up", expanded=False):
+                contact_status_opts = ["All", "Not Contacted", "Contacted"]
+                global_yes_no_opts = ["All", "Yes", "No"]
+                support_level_opts = get_global_support_level_options()
+
+                contact_status = st.selectbox(
+                    "Contact Status",
+                    contact_status_opts,
+                    index=contact_status_opts.index(st.session_state.active_filters.get("contact_status", "All")),
+                    help="Uses uploaded candidate Street List and Walk Sheet results.",
+                )
+                global_nh = st.selectbox(
+                    "Not Home",
+                    global_yes_no_opts,
+                    index=global_yes_no_opts.index(st.session_state.active_filters.get("global_nh", "All")),
+                )
+                global_follow_up = st.selectbox(
+                    "Follow-Up",
+                    global_yes_no_opts,
+                    index=global_yes_no_opts.index(st.session_state.active_filters.get("global_follow_up", "All")),
+                )
+                current_support = st.session_state.active_filters.get("global_support_level", "All")
+                if current_support not in support_level_opts:
+                    current_support = "All"
+                global_support_level = st.selectbox(
+                    "Support Level",
+                    support_level_opts,
+                    index=support_level_opts.index(current_support),
+                )
+                st.caption("These filters use uploaded Street List and Walk Sheet tracking data across exports, reports, and turf packets.")
+
             st.caption("Counts stay at zero until you click Apply Filters.")
             cols2 = st.columns(2)
             apply_filters = cols2[0].form_submit_button("Apply Filters", use_container_width=True, type="primary")
@@ -2797,6 +3004,10 @@ with st.sidebar:
                 "has_email": has_email,
                 "has_landline": has_landline,
                 "has_mobile": has_mobile,
+                "contact_status": contact_status,
+                "global_nh": global_nh,
+                "global_follow_up": global_follow_up,
+                "global_support_level": global_support_level,
             }
             st.session_state.filters_applied = True
             st.rerun()
