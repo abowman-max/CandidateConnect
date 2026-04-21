@@ -3256,46 +3256,60 @@ dashboard_tabs = st.tabs(["Overview", "Contact Tracking", "Output Center"])
 
 with dashboard_tabs[0]:
     chart_cols = st.columns(3, gap="medium")
-with chart_cols[0]:
-    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-    pie_chart_with_table(party_df, "Party", "Count", "Party Breakdown", "party")
+    with chart_cols[0]:
+        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+        pie_chart_with_table(party_df, "Party", "Count", "Party Breakdown", "party")
+        st.markdown('</div>', unsafe_allow_html=True)
+    with chart_cols[1]:
+        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+        pie_chart_with_table(gender_df, "Gender", "Count", "Gender Breakdown", "gender")
+        st.markdown('</div>', unsafe_allow_html=True)
+    with chart_cols[2]:
+        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+        pie_chart_with_table(age_df, "Age Range", "Count", "Age Range Breakdown", "age")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    divider()
+
+    st.markdown('<div class="table-card">', unsafe_allow_html=True)
+    st.markdown('<div class="small-header">Counts by Area</div>', unsafe_allow_html=True)
+    if area_choices:
+        selected_area = st.selectbox("Area", area_choices, label_visibility="collapsed", key="overview_area_group")
+        area_df = query_area_summary(active, columns, selected_area).copy()
+        area_df["Individuals"] = pd.to_numeric(area_df["Individuals"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
+        area_df["Households"] = pd.to_numeric(area_df["Households"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
+        st.dataframe(area_df, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No area fields available.")
     st.markdown('</div>', unsafe_allow_html=True)
-with chart_cols[1]:
-    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-    pie_chart_with_table(gender_df, "Gender", "Count", "Gender Breakdown", "gender")
-    st.markdown('</div>', unsafe_allow_html=True)
-with chart_cols[2]:
-    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-    pie_chart_with_table(age_df, "Age Range", "Count", "Age Range Breakdown", "age")
-    st.markdown('</div>', unsafe_allow_html=True)
 
-divider()
+with dashboard_tabs[1]:
+    tracking_cols = st.columns(2, gap="medium")
+    with tracking_cols[0]:
+        st.markdown('<div class="table-card">', unsafe_allow_html=True)
+        st.markdown('<div class="small-header">Contact Tracking</div>', unsafe_allow_html=True)
+        tracking_summary_df = pd.DataFrame([
+            {"Metric": "Contacted", "Percent": f"{int(followup_stats.get('contacted_pct') or 0)}%", "Voters": f"{int(followup_stats.get('contacted_count') or 0):,}"},
+            {"Metric": "Not Home", "Percent": f"{int(followup_stats.get('nh_pct') or 0)}%", "Voters": f"{int(followup_stats.get('nh_count') or 0):,}"},
+            {"Metric": "Follow-Up", "Percent": f"{int(followup_stats.get('followup_pct') or 0)}%", "Voters": f"{int(followup_stats.get('followup_count') or 0):,}"},
+        ])
+        st.dataframe(tracking_summary_df, use_container_width=True, hide_index=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+    with tracking_cols[1]:
+        st.markdown('<div class="table-card">', unsafe_allow_html=True)
+        st.markdown('<div class="small-header">Support Snapshot</div>', unsafe_allow_html=True)
+        support_summary_df = pd.DataFrame([
+            {"Metric": "Strong Support", "Percent": f"{int(followup_stats.get('strong_pct') or 0)}%", "Voters": f"{int(followup_stats.get('strong_count') or 0):,}"},
+            {"Metric": "Undecided", "Percent": f"{int(followup_stats.get('undecided_pct') or 0)}%", "Voters": f"{int(followup_stats.get('undecided_count') or 0):,}"},
+        ])
+        st.dataframe(support_summary_df, use_container_width=True, hide_index=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-st.markdown('<div class="table-card">', unsafe_allow_html=True)
-st.markdown('<div class="small-header">Counts by Area</div>', unsafe_allow_html=True)
-if area_choices:
-    selected_area = st.selectbox("Area", area_choices, label_visibility="collapsed")
-    area_df = query_area_summary(active, columns, selected_area).copy()
-    area_df["Individuals"] = pd.to_numeric(area_df["Individuals"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
-    area_df["Households"] = pd.to_numeric(area_df["Households"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
-    rows_html = "".join(
-        f"<tr><td class='label-cell'>{row[selected_area]}</td><td class='num-cell'>{row['Individuals']}</td><td class='num-cell'>{row['Households']}</td></tr>"
-        for _, row in area_df.iterrows()
-    )
-    table_html = f"<table class='cc-mini-table' style='font-size:12px;'><thead><tr><th style='text-align:left'>{selected_area}</th><th>Individuals</th><th>Households</th></tr></thead><tbody>{rows_html}</tbody></table>"
-    st.markdown(table_html, unsafe_allow_html=True)
-else:
-    st.caption("No area columns found")
-st.markdown('</div>', unsafe_allow_html=True)
-
-
-divider()
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.markdown('<div class="small-header">Output Center</div>', unsafe_allow_html=True)
-st.caption("Use tabs below to keep exports, reports, and turf tools organized.")
-
-output_tabs = st.tabs(["Exports", "Reports", "Turf Builder"])
-
+with dashboard_tabs[2]:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="small-header">Output Center</div>', unsafe_allow_html=True)
+    
+    output_tabs = st.tabs(["Exports", "Reports", "Turf Builder"])
 with output_tabs[0]:
     st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
     st.caption("CSV files are only built when you click the button for that export type.")
