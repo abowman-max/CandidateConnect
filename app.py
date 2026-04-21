@@ -3267,10 +3267,17 @@ with st.spinner("Running DuckDB queries..."):
     metrics = query_metrics(active, columns)
     large_filter_mode = use_large_filter_mode(active, columns)
     followup_stats = query_dashboard_followup_stats(active)
-    party_df = query_chart(active, columns, "_PartyNorm", "Party")
-    gender_df = query_chart(active, columns, "_Gender", "Gender")
-    age_df = query_chart(active, columns, "_AgeRange", "Age Range")
-    area_choices = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in columns]
+
+    if large_filter_mode:
+        party_df = pd.DataFrame(columns=["Party", "Count"])
+        gender_df = pd.DataFrame(columns=["Gender", "Count"])
+        age_df = pd.DataFrame(columns=["Age Range", "Count"])
+        area_choices = []
+    else:
+        party_df = query_chart(active, columns, "_PartyNorm", "Party")
+        gender_df = query_chart(active, columns, "_Gender", "Gender")
+        age_df = query_chart(active, columns, "_AgeRange", "Age Range")
+        area_choices = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in columns]
 
 metric_cols = st.columns(5, gap="small")
 metric_values = [
@@ -3306,33 +3313,36 @@ if large_filter_mode:
 dashboard_tabs = st.tabs(["Overview", "Contact Tracking", "Output Center"])
 
 with dashboard_tabs[0]:
-    chart_cols = st.columns(3, gap="medium")
-    with chart_cols[0]:
-        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-        pie_chart_with_table(party_df, "Party", "Count", "Party Breakdown", "party")
-        st.markdown('</div>', unsafe_allow_html=True)
-    with chart_cols[1]:
-        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-        pie_chart_with_table(gender_df, "Gender", "Count", "Gender Breakdown", "gender")
-        st.markdown('</div>', unsafe_allow_html=True)
-    with chart_cols[2]:
-        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-        pie_chart_with_table(age_df, "Age Range", "Count", "Age Range Breakdown", "age")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    divider()
-
-    st.markdown('<div class="table-card">', unsafe_allow_html=True)
-    st.markdown('<div class="small-header">Counts by Area</div>', unsafe_allow_html=True)
-    if area_choices:
-        selected_area = st.selectbox("Area", area_choices, label_visibility="collapsed", key="overview_area_group")
-        area_df = query_area_summary(active, columns, selected_area).copy()
-        area_df["Individuals"] = pd.to_numeric(area_df["Individuals"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
-        area_df["Households"] = pd.to_numeric(area_df["Households"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
-        st.dataframe(area_df, use_container_width=True, hide_index=True)
+    if large_filter_mode:
+        st.info("Overview charts and area breakdown are temporarily paused for very large statewide filters so the app stays stable. Narrow the universe to restore them.")
     else:
-        st.caption("No area fields available.")
-    st.markdown('</div>', unsafe_allow_html=True)
+        chart_cols = st.columns(3, gap="medium")
+        with chart_cols[0]:
+            st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+            pie_chart_with_table(party_df, "Party", "Count", "Party Breakdown", "party")
+            st.markdown('</div>', unsafe_allow_html=True)
+        with chart_cols[1]:
+            st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+            pie_chart_with_table(gender_df, "Gender", "Count", "Gender Breakdown", "gender")
+            st.markdown('</div>', unsafe_allow_html=True)
+        with chart_cols[2]:
+            st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+            pie_chart_with_table(age_df, "Age Range", "Count", "Age Range Breakdown", "age")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        divider()
+
+        st.markdown('<div class="table-card">', unsafe_allow_html=True)
+        st.markdown('<div class="small-header">Counts by Area</div>', unsafe_allow_html=True)
+        if area_choices:
+            selected_area = st.selectbox("Area", area_choices, label_visibility="collapsed", key="overview_area_group")
+            area_df = query_area_summary(active, columns, selected_area).copy()
+            area_df["Individuals"] = pd.to_numeric(area_df["Individuals"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
+            area_df["Households"] = pd.to_numeric(area_df["Households"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
+            st.dataframe(area_df, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No area fields available.")
+        st.markdown('</div>', unsafe_allow_html=True)
 
 with dashboard_tabs[1]:
     if large_filter_mode:
@@ -3360,7 +3370,7 @@ with dashboard_tabs[1]:
 
 with dashboard_tabs[2]:
     if large_filter_mode:
-        st.caption("Large-filter mode is active. Prepare outputs only when needed, or narrow the universe first for faster performance.")
+        st.warning("Large statewide filter mode is active. Core counts are available, but narrow the universe before running heavy outputs like statewide PDFs or turf builds.")
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="small-header">Output Center</div>', unsafe_allow_html=True)
     
