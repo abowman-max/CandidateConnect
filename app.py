@@ -1192,13 +1192,28 @@ def build_turf_packet_zip(active_filters, mode: str, target_size: int = 50):
     )
 
     zip_buffer = BytesIO()
-    stamp = datetime.now().strftime("%Y%m%d_%H%M")
     with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("turf_summary.csv", summary_df.to_csv(index=False))
-        zf.writestr("README.txt", "Candidate Connect Turf Packets\n\nThis zip contains one CSV per turf plus turf_summary.csv.\n")
-        for turf_id, turf_df in export_df.groupby("Turf_ID", sort=True, dropna=False):
+        zf.writestr(
+            "README.txt",
+            "Candidate Connect Turf Packets\n\nThis zip contains turf_summary.csv, one CSV per turf, and one walk sheet PDF per turf.\n"
+        )
+        for turf_id, turf_df in df.groupby("Turf_ID", sort=True, dropna=False):
             safe_id = sanitize_filename_part(str(turf_id))
-            zf.writestr(f"turf_packets/{safe_id}.csv", turf_df.drop(columns=["Turf_ID"], errors="ignore").to_csv(index=False))
+            csv_df = export_df[export_df["Turf_ID"] == turf_id].drop(columns=["Turf_ID"], errors="ignore")
+            zf.writestr(f"turf_packets/{safe_id}.csv", csv_df.to_csv(index=False))
+
+            turf_street_df = build_street_list_dataframe_from_detail_df(turf_df.copy())
+            summary_row = summary_df[summary_df["Turf_ID"] == turf_id]
+            voters = int(summary_row["Voters"].iloc[0]) if not summary_row.empty else len(turf_df)
+            households = int(summary_row["Households"].iloc[0]) if not summary_row.empty else 0
+            precincts = summary_row["Precincts"].iloc[0] if not summary_row.empty else ""
+            filter_desc = f"{turf_id} | {voters:,} voters | {households:,} households"
+            if normalize_export_text(precincts):
+                filter_desc += f" | {precincts}"
+            pdf_bytes = generate_walk_sheet_pdf_from_street_df(turf_street_df, str(turf_id), filter_desc)
+            if pdf_bytes:
+                zf.writestr(f"turf_walksheets/{safe_id}_walksheet.pdf", pdf_bytes)
     zip_buffer.seek(0)
     return zip_buffer.getvalue(), summary_df
 
@@ -1859,6 +1874,155 @@ def generate_walk_sheet_pdf_bytes(active_filters):
 
 
 
+def build_street_list_dataframe_from_detail_df(df: pd.DataFrame):
+    if df is None or df.empty:
+        return pd.DataFrame(columns=[
+            "Precinct","StreetGroup","AddressLine","FullName","Phone","Party","Sex","Age",
+            "F","A","U","NH","Yard Sign","MB_Perm","HouseNumSort","AptSort"
+        ])
+
+    precinct_col = first_existing_detail(df.columns.tolist(), ["Precinct"])
+    street_col = first_existing_detail(df.columns.tolist(), ["Street Name"])
+    house_col = first_existing_detail(df.columns.tolist(), ["House Number"])
+    apt_col = first_existing_detail(df.columns.tolist(), ["Apartment Number"])
+    sex_col = first_existing_detail(df.columns.tolist(), ["Gender", "Sex"])
+    age_col = first_existing_detail(df.columns.tolist(), ["Age"])
+    party_col = first_existing_detail(df.columns.tolist(), ["Party"])
+    mb_perm_col = first_existing_detail(df.columns.tolist(), ["MB_PERM", "MB_Perm", "MB_Pern"])
+
+    out = pd.DataFrame()
+    out["Precinct"] = df[precinct_col].apply(normalize_export_text) if precinct_col else ""
+    out["StreetGroup"] = df[street_col].apply(normalize_address_value) if street_col else ""
+    house_vals = df[house_col].apply(normalize_export_text) if house_col else pd.Series([""] * len(df))
+    apt_vals = df[apt_col].apply(normalize_export_text) if apt_col else pd.Series([""] * len(df))
+    out["AddressLine"] = house_vals
+    out.loc[apt_vals != "", "AddressLine"] = out.loc[apt_vals != "", "AddressLine"] + " Apt " + apt_vals[apt_vals != ""]
+    out["AddressLine"] = out["AddressLine"].apply(collapse_spaces).apply(normalize_address_value)
+    out["FullName"] = df.apply(full_name_from_row, axis=1).apply(normalize_name_value)
+    out["Phone"] = df.apply(choose_best_phone, axis=1)
+    out["Party"] = df[party_col].apply(normalize_export_text) if party_col else ""
+    out["Sex"] = df[sex_col].apply(normalize_export_text) if sex_col else ""
+    out["Age"] = df[age_col].apply(lambda v: normalize_numeric_string(v)) if age_col else ""
+    out["F"] = ""
+    out["A"] = ""
+    out["U"] = ""
+    out["NH"] = ""
+    out["Yard Sign"] = ""
+    out["MB_Perm"] = df[mb_perm_col].apply(normalize_mb_perm_value) if mb_perm_col else ""
+    out["HouseNumSort"] = house_vals.apply(parse_house_number)
+    out["AptSort"] = apt_vals.apply(parse_apartment_sort)
+
+    out = out.sort_values(by=["Precinct", "StreetGroup", "HouseNumSort", "AptSort", "FullName"], kind="stable").reset_index(drop=True)
+    return out
+
+
+def make_walk_sheet_groups_from_street_df(street_df: pd.DataFrame):
+    if street_df is None or street_df.empty:
+        return []
+
+    groups = []
+    for precinct, precinct_df in street_df.groupby("Precinct", sort=False):
+        precinct_df = precinct_df.sort_values(["StreetGroup", "HouseNumSort", "AptSort", "FullName"], kind="stable")
+        for (street, address), addr_grp in precinct_df.groupby(["StreetGroup", "AddressLine"], sort=False, dropna=False):
+            addr_grp = addr_grp.reset_index(drop=True)
+            groups.append({
+                "precinct": normalize_export_text(precinct),
+                "street": normalize_export_text(street),
+                "address": normalize_export_text(address),
+                "rows": addr_grp.to_dict("records"),
+            })
+    return groups
+
+
+def generate_walk_sheet_pdf_from_street_df(street_df: pd.DataFrame, title: str, filter_desc: str = ""):
+    if street_df is None or street_df.empty:
+        return b""
+
+    groups = make_walk_sheet_groups_from_street_df(street_df)
+    if not groups:
+        return b""
+
+    page_size = landscape(letter)
+    width, height = page_size
+    printed_date = datetime.now().strftime("%m/%d/%Y")
+    total_pages = _estimate_walk_sheet_pages(groups, page_size)
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=page_size)
+
+    page_num = 1
+    page_in_precinct = 1
+    current_precinct = groups[0]["precinct"]
+
+    header_title = title or current_precinct or "Selected Turf"
+    header_desc = filter_desc or "Turf packet walk sheet"
+    _draw_walk_sheet_header(c, width, height, header_title, page_in_precinct, printed_date, header_desc)
+
+    body_top = height - 132
+    body_bottom = 44
+    address_h = 20
+    voter_h = 20
+    y = body_top
+
+    for idx, group in enumerate(groups):
+        if group["precinct"] != current_precinct:
+            current_precinct = group["precinct"]
+            page_in_precinct = 1
+
+        needed = address_h + (len(group["rows"]) * voter_h) + 8
+        if y - needed < body_bottom:
+            draw_footer(c, page_num, total_pages, printed_date)
+            c.showPage()
+            page_num += 1
+            if idx > 0 and groups[idx - 1]["precinct"] == group["precinct"]:
+                page_in_precinct += 1
+            else:
+                page_in_precinct = 1
+            _draw_walk_sheet_header(c, width, height, header_title, page_in_precinct, printed_date, header_desc)
+            y = body_top
+
+        c.setFillColor(REPORT_LIGHT)
+        c.roundRect(24, y - 15, width - 48, 17, 6, fill=1, stroke=0)
+        c.setFillColor(REPORT_NAVY)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(32, y - 10, truncate_text(f"{group['street']}  |  {group['address']}", 110))
+        y -= address_h
+
+        for row in group["rows"]:
+            row_y = y
+            checkbox_y = row_y - 11
+            c.setStrokeColor(REPORT_GRID)
+            for x in (28, 47, 66):
+                c.rect(x, checkbox_y, 10, 10, fill=0, stroke=1)
+
+            c.setFillColor(colors.black)
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(92, row_y - 6, truncate_text(row.get("FullName", ""), 32))
+
+            detail = " / ".join(
+                part for part in [
+                    truncate_text(row.get("Phone", ""), 18),
+                    truncate_text(row.get("Party", ""), 2),
+                    truncate_text(row.get("Sex", ""), 1),
+                    truncate_text(row.get("Age", ""), 3),
+                    "MB " + truncate_text(get_mb_perm_display(row), 1) if truncate_text(get_mb_perm_display(row), 1) else "",
+                ]
+                if part
+            )
+            c.setFont("Helvetica", 9)
+            c.drawString(300, row_y - 6, truncate_text(detail, 40))
+
+            notes_y = row_y - 8
+            c.setStrokeColor(REPORT_GRID)
+            c.line(500, notes_y, width - 28, notes_y)
+            y -= voter_h
+
+        y -= 8
+
+    draw_footer(c, page_num, total_pages, printed_date)
+    c.save()
+    return buffer.getvalue()
+
+
 def _summary_count_df(active_filters, columns, group_expr, label_alias="Label", include_blank=True):
     con = get_conn()
     where_sql, params = current_filter_clause(active_filters, columns)
@@ -2322,6 +2486,44 @@ if area_choices:
     st.markdown(table_html, unsafe_allow_html=True)
 else:
     st.caption("No area columns found")
+with output_tabs[2]:
+    st.markdown('<div class="small-header">Turf Builder</div>', unsafe_allow_html=True)
+    st.caption("Build packet-style turf exports with one CSV and one Walk Sheet PDF per turf inside a single zip file.")
+
+    turf_mode = st.selectbox(
+        "Split Method",
+        ["Target Doors", "Target Voters", "By Precinct", "By Municipality"],
+        key="turf_builder_mode",
+    )
+
+    target_size = 50
+    if turf_mode in ["Target Doors", "Target Voters"]:
+        label = "Target Doors Per Turf" if turf_mode == "Target Doors" else "Target Voters Per Turf"
+        target_size = st.slider(label, min_value=10, max_value=250, value=50, step=5, key="turf_target_size")
+
+    turf_cols = st.columns(2, gap="medium")
+    with turf_cols[0]:
+        if st.button("Prepare Turf Packet ZIP", use_container_width=True):
+            with st.spinner("Building turf packet zip with CSVs and Walk Sheet PDFs..."):
+                zip_bytes, summary_df = build_turf_packet_zip(active, mode=turf_mode, target_size=target_size)
+                st.session_state["turf_packet_zip_bytes"] = zip_bytes
+                st.session_state["turf_summary_df"] = summary_df
+                st.session_state["turf_packet_mode"] = turf_mode
+    with turf_cols[1]:
+        if "turf_packet_zip_bytes" in st.session_state and st.session_state["turf_packet_zip_bytes"]:
+            st.download_button(
+                "Download Turf Packet ZIP",
+                data=st.session_state["turf_packet_zip_bytes"],
+                file_name="candidate_connect_turf_packets.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+
+    if "turf_summary_df" in st.session_state and not st.session_state["turf_summary_df"].empty:
+        st.markdown("#### Turf Summary")
+        st.dataframe(st.session_state["turf_summary_df"], use_container_width=True, hide_index=True)
+
+
 st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -2474,6 +2676,44 @@ with output_tabs[1]:
                     mime="application/pdf",
                     use_container_width=True,
                 )
+
+
+with output_tabs[2]:
+    st.markdown('<div class="small-header">Turf Builder</div>', unsafe_allow_html=True)
+    st.caption("Build packet-style turf exports with one CSV and one Walk Sheet PDF per turf inside a single zip file.")
+
+    turf_mode = st.selectbox(
+        "Split Method",
+        ["Target Doors", "Target Voters", "By Precinct", "By Municipality"],
+        key="turf_builder_mode",
+    )
+
+    target_size = 50
+    if turf_mode in ["Target Doors", "Target Voters"]:
+        label = "Target Doors Per Turf" if turf_mode == "Target Doors" else "Target Voters Per Turf"
+        target_size = st.slider(label, min_value=10, max_value=250, value=50, step=5, key="turf_target_size")
+
+    turf_cols = st.columns(2, gap="medium")
+    with turf_cols[0]:
+        if st.button("Prepare Turf Packet ZIP", use_container_width=True):
+            with st.spinner("Building turf packet zip with CSVs and Walk Sheet PDFs..."):
+                zip_bytes, summary_df = build_turf_packet_zip(active, mode=turf_mode, target_size=target_size)
+                st.session_state["turf_packet_zip_bytes"] = zip_bytes
+                st.session_state["turf_summary_df"] = summary_df
+                st.session_state["turf_packet_mode"] = turf_mode
+    with turf_cols[1]:
+        if "turf_packet_zip_bytes" in st.session_state and st.session_state["turf_packet_zip_bytes"]:
+            st.download_button(
+                "Download Turf Packet ZIP",
+                data=st.session_state["turf_packet_zip_bytes"],
+                file_name="candidate_connect_turf_packets.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+
+    if "turf_summary_df" in st.session_state and not st.session_state["turf_summary_df"].empty:
+        st.markdown("#### Turf Summary")
+        st.dataframe(st.session_state["turf_summary_df"], use_container_width=True, hide_index=True)
 
 
 st.markdown('</div>', unsafe_allow_html=True)
