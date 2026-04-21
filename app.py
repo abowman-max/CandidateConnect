@@ -1519,6 +1519,74 @@ def apply_global_followup_filters_df(df: pd.DataFrame, active_filters: dict) -> 
 
     return out
 
+
+def query_dashboard_followup_stats(active_filters: dict) -> dict:
+    df = fetch_filtered_detail(active_filters)
+    if df is None or df.empty:
+        return {
+            "contacted_pct": 0,
+            "nh_pct": 0,
+            "followup_pct": 0,
+            "strong_pct": 0,
+            "undecided_pct": 0,
+            "contacted_count": 0,
+            "nh_count": 0,
+            "followup_count": 0,
+            "strong_count": 0,
+            "undecided_count": 0,
+        }
+
+    df = merge_uploaded_street_results_into_detail_df(df)
+    df = merge_uploaded_walk_results_into_detail_df(df)
+
+    for field in ["F", "A", "U", "NH", "Yard Sign", "Notes", "Contacted", "Result", "Support Level", "Follow-Up", "Walk Notes"]:
+        if field not in df.columns:
+            df[field] = ""
+
+    total = max(len(df), 1)
+
+    street_contact_mask = (
+        df["F"].astype(str).str.strip().ne("") |
+        df["A"].astype(str).str.strip().ne("") |
+        df["U"].astype(str).str.strip().ne("") |
+        df["NH"].astype(str).str.strip().ne("") |
+        df["Yard Sign"].astype(str).str.strip().ne("") |
+        df["Notes"].astype(str).str.strip().ne("")
+    )
+    walk_contact_mask = (
+        df["Contacted"].astype(str).str.strip().ne("") |
+        df["Result"].astype(str).str.strip().ne("") |
+        df["Support Level"].astype(str).str.strip().ne("") |
+        df["Follow-Up"].astype(str).str.strip().ne("") |
+        df["Walk Notes"].astype(str).str.strip().ne("")
+    )
+    contacted_mask = street_contact_mask | walk_contact_mask
+
+    nh_mask = (
+        df["NH"].astype(str).str.strip().ne("") |
+        df["Result"].astype(str).str.upper().str.replace(" ", "", regex=False).isin(["NOTHOME", "NH"])
+    )
+    followup_mask = df["Follow-Up"].astype(str).str.strip().ne("")
+    support_series = df["Support Level"].astype(str).str.strip().str.casefold()
+    strong_mask = support_series.eq("strong")
+    undecided_mask = support_series.eq("undecided")
+
+    def pct(mask):
+        return round((int(mask.sum()) / total) * 100)
+
+    return {
+        "contacted_pct": pct(contacted_mask),
+        "nh_pct": pct(nh_mask),
+        "followup_pct": pct(followup_mask),
+        "strong_pct": pct(strong_mask),
+        "undecided_pct": pct(undecided_mask),
+        "contacted_count": int(contacted_mask.sum()),
+        "nh_count": int(nh_mask.sum()),
+        "followup_count": int(followup_mask.sum()),
+        "strong_count": int(strong_mask.sum()),
+        "undecided_count": int(undecided_mask.sum()),
+    }
+
 def _query_metrics_from_detail(active_filters, columns):
     df = fetch_filtered_detail(active_filters)
     if df is None or df.empty:
@@ -3150,6 +3218,7 @@ columns = st.session_state.columns
 
 with st.spinner("Running DuckDB queries..."):
     metrics = query_metrics(active, columns)
+    followup_stats = query_dashboard_followup_stats(active)
     party_df = query_chart(active, columns, "_PartyNorm", "Party")
     gender_df = query_chart(active, columns, "_Gender", "Gender")
     age_df = query_chart(active, columns, "_AgeRange", "Age Range")
@@ -3168,6 +3237,21 @@ metric_values = [
 for col, (label, value) in zip(metric_cols, metric_values):
     with col:
         st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
+
+followup_cols = st.columns(5, gap="small")
+followup_values = [
+    ("Contacted", f"{int(followup_stats.get('contacted_pct') or 0)}%", f"{int(followup_stats.get('contacted_count') or 0):,}"),
+    ("Not Home", f"{int(followup_stats.get('nh_pct') or 0)}%", f"{int(followup_stats.get('nh_count') or 0):,}"),
+    ("Follow-Up", f"{int(followup_stats.get('followup_pct') or 0)}%", f"{int(followup_stats.get('followup_count') or 0):,}"),
+    ("Strong Support", f"{int(followup_stats.get('strong_pct') or 0)}%", f"{int(followup_stats.get('strong_count') or 0):,}"),
+    ("Undecided", f"{int(followup_stats.get('undecided_pct') or 0)}%", f"{int(followup_stats.get('undecided_count') or 0):,}"),
+]
+for col, (label, value, subvalue) in zip(followup_cols, followup_values):
+    with col:
+        st.markdown(
+            f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div><div class="tiny-muted">{subvalue} voters</div></div>',
+            unsafe_allow_html=True
+        )
 
 divider()
 
