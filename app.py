@@ -1389,8 +1389,111 @@ def build_filter_summary_lines(active_filters: dict) -> list[str]:
             lines.append(f"{label}: {val}")
     return lines or ["No additional filters selected"]
 
+
+def get_street_results_template_csv_bytes():
+    template_df = pd.DataFrame(columns=["PA ID Number", "F", "A", "U", "NH", "Yard Sign", "Notes"])
+    return template_df.to_csv(index=False).encode("utf-8")
+
+def _normalized_col_lookup(columns):
+    lookup = {}
+    for col in columns:
+        key = re.sub(r"[^a-z0-9]+", "", str(col).strip().lower())
+        if key and key not in lookup:
+            lookup[key] = col
+    return lookup
+
+def _find_uploaded_results_column(columns, candidates):
+    lookup = _normalized_col_lookup(columns)
+    for candidate in candidates:
+        key = re.sub(r"[^a-z0-9]+", "", str(candidate).strip().lower())
+        if key in lookup:
+            return lookup[key]
+    return None
+
+def normalize_tracking_mark(val):
+    s = normalize_export_text(val).upper()
+    return "X" if s in {"X", "Y", "YES", "TRUE", "T", "1", "CHECK", "CHECKED"} else ""
+
+def standardize_uploaded_street_results(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["PA ID Number", "F", "A", "U", "NH", "Yard Sign", "Notes"])
+
+    pa_id_col = _find_uploaded_results_column(
+        df.columns.tolist(),
+        ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "State Voter ID", "Voter ID", "VoterID"]
+    )
+    if pa_id_col is None:
+        return pd.DataFrame(columns=["PA ID Number", "F", "A", "U", "NH", "Yard Sign", "Notes"])
+
+    out = pd.DataFrame()
+    out["PA ID Number"] = df[pa_id_col].apply(normalize_numeric_string)
+    field_map = {
+        "F": ["F"],
+        "A": ["A"],
+        "U": ["U"],
+        "NH": ["NH", "Not Home", "NotHome"],
+        "Yard Sign": ["Yard Sign", "YardSign", "Sign", "Yard"],
+        "Notes": ["Notes", "Note", "Comments", "Comment"],
+    }
+    for field, candidates in field_map.items():
+        col = _find_uploaded_results_column(df.columns.tolist(), candidates)
+        if col is None:
+            out[field] = ""
+        elif field == "Notes":
+            out[field] = df[col].apply(normalize_export_text)
+        else:
+            out[field] = df[col].apply(normalize_tracking_mark)
+
+    out = out[out["PA ID Number"].astype(str).str.strip() != ""].copy()
+    out = out.drop_duplicates(subset=["PA ID Number"], keep="last").reset_index(drop=True)
+    return out
+
+def merge_uploaded_street_results_into_detail_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    merged = df.copy()
+    uploaded = st.session_state.get("street_results_df")
+    if not isinstance(uploaded, pd.DataFrame) or uploaded.empty:
+        for field in ["F", "A", "U", "NH", "Yard Sign", "Notes"]:
+            if field not in merged.columns:
+                merged[field] = ""
+        return merged
+
+    pa_id_col = first_existing_detail(
+        merged.columns.tolist(),
+        ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "State Voter ID", "Voter ID", "VoterID"]
+    )
+    if pa_id_col is None:
+        for field in ["F", "A", "U", "NH", "Yard Sign", "Notes"]:
+            if field not in merged.columns:
+                merged[field] = ""
+        return merged
+
+    merged["PA ID Number"] = merged[pa_id_col].apply(normalize_numeric_string)
+    merge_cols = ["PA ID Number", "F", "A", "U", "NH", "Yard Sign", "Notes"]
+    merged = merged.merge(uploaded[merge_cols], on="PA ID Number", how="left")
+    for field in ["F", "A", "U", "NH", "Yard Sign", "Notes"]:
+        merged[field] = merged[field].fillna("").astype(str)
+    return merged
+
+def apply_uploaded_street_result_filters(street_df: pd.DataFrame) -> pd.DataFrame:
+    if street_df is None or street_df.empty:
+        return street_df
+
+    filters = st.session_state.get("street_results_filters", {}) or {}
+    out = street_df.copy()
+    for field in ["F", "A", "U", "NH", "Yard Sign"]:
+        mode = normalize_export_text(filters.get(field, "All"))
+        if mode == "Marked":
+            out = out[out[field].astype(str).str.strip() != ""]
+        elif mode == "Unmarked":
+            out = out[out[field].astype(str).str.strip() == ""]
+    return out
+
 def build_street_list_dataframe(active_filters):
     df = fetch_filtered_detail(active_filters).copy()
+    df = merge_uploaded_street_results_into_detail_df(df)
     if df.empty:
         return pd.DataFrame(columns=[
             "Precinct","StreetGroup","AddressLine","FullName","Phone","Party","Sex","Age",
@@ -1419,11 +1522,11 @@ def build_street_list_dataframe(active_filters):
     out["Party"] = df[party_col].apply(normalize_export_text) if party_col else ""
     out["Sex"] = df[sex_col].apply(normalize_export_text) if sex_col else ""
     out["Age"] = df[age_col].apply(lambda v: normalize_numeric_string(v)) if age_col else ""
-    out["F"] = ""
-    out["A"] = ""
-    out["U"] = ""
-    out["NH"] = ""
-    out["Yard Sign"] = ""
+    out["F"] = df["F"].apply(normalize_tracking_mark) if "F" in df.columns else ""
+    out["A"] = df["A"].apply(normalize_tracking_mark) if "A" in df.columns else ""
+    out["U"] = df["U"].apply(normalize_tracking_mark) if "U" in df.columns else ""
+    out["NH"] = df["NH"].apply(normalize_tracking_mark) if "NH" in df.columns else ""
+    out["Yard Sign"] = df["Yard Sign"].apply(normalize_tracking_mark) if "Yard Sign" in df.columns else ""
     out["MB_Perm"] = df[mb_perm_col].apply(normalize_mb_perm_value) if mb_perm_col else ""
     out["HouseNumSort"] = house_vals.apply(parse_house_number)
     out["AptSort"] = apt_vals.apply(parse_apartment_sort)
@@ -1638,6 +1741,7 @@ def _draw_precinct_page_header(c, width, height, precinct, page_in_precinct):
 
 def generate_street_list_pdf_bytes(active_filters):
     street_df = build_street_list_dataframe(active_filters)
+    street_df = apply_uploaded_street_result_filters(street_df)
     if street_df.empty:
         return b""
 
@@ -1735,6 +1839,11 @@ def generate_street_list_pdf_bytes(active_filters):
 
                 for label in ["F", "A", "U", "NH", "Yard Sign"]:
                     c.rect(cols[label], y - 7, 8, 8, fill=0, stroke=1)
+                    mark_val = normalize_export_text(row.get(label, ""))
+                    if mark_val:
+                        c.setFont("Helvetica-Bold", 7.5)
+                        c.drawCentredString(cols[label] + 4, y - 5, "X")
+                        c.setFont("Helvetica", 8.5)
 
                 mb_val = truncate_text(get_mb_perm_display(row), 1)
                 if mb_val:
@@ -1916,6 +2025,7 @@ def generate_walk_sheet_pdf_bytes(active_filters):
 
 
 def build_street_list_dataframe_from_detail_df(df: pd.DataFrame):
+    df = merge_uploaded_street_results_into_detail_df(df)
     if df is None or df.empty:
         return pd.DataFrame(columns=[
             "Precinct","StreetGroup","AddressLine","FullName","Phone","Party","Sex","Age",
@@ -1944,11 +2054,11 @@ def build_street_list_dataframe_from_detail_df(df: pd.DataFrame):
     out["Party"] = df[party_col].apply(normalize_export_text) if party_col else ""
     out["Sex"] = df[sex_col].apply(normalize_export_text) if sex_col else ""
     out["Age"] = df[age_col].apply(lambda v: normalize_numeric_string(v)) if age_col else ""
-    out["F"] = ""
-    out["A"] = ""
-    out["U"] = ""
-    out["NH"] = ""
-    out["Yard Sign"] = ""
+    out["F"] = df["F"].apply(normalize_tracking_mark) if "F" in df.columns else ""
+    out["A"] = df["A"].apply(normalize_tracking_mark) if "A" in df.columns else ""
+    out["U"] = df["U"].apply(normalize_tracking_mark) if "U" in df.columns else ""
+    out["NH"] = df["NH"].apply(normalize_tracking_mark) if "NH" in df.columns else ""
+    out["Yard Sign"] = df["Yard Sign"].apply(normalize_tracking_mark) if "Yard Sign" in df.columns else ""
     out["MB_Perm"] = df[mb_perm_col].apply(normalize_mb_perm_value) if mb_perm_col else ""
     out["HouseNumSort"] = house_vals.apply(parse_house_number)
     out["AptSort"] = apt_vals.apply(parse_apartment_sort)
@@ -2252,6 +2362,10 @@ if "options" not in st.session_state:
     st.session_state.options = {}
 if "saved_universes" not in st.session_state:
     st.session_state.saved_universes = load_saved_universes()
+if "street_results_df" not in st.session_state:
+    st.session_state.street_results_df = pd.DataFrame(columns=["PA ID Number", "F", "A", "U", "NH", "Yard Sign", "Notes"])
+if "street_results_filters" not in st.session_state:
+    st.session_state.street_results_filters = {}
 
 with st.sidebar:
     st.header("Filters")
@@ -2616,7 +2730,70 @@ with output_tabs[1]:
                 )
 
     with report_sections[1]:
-        st.caption("Builds a compact precinct-grouped PDF with cover page, counts summary, precinct sections, NH checkbox column, MB_Perm Y/N, and precinct bookmarks.")
+        st.caption("Builds a compact precinct-grouped PDF and can refill F, A, U, NH, and Yard Sign boxes from an uploaded street-results CSV matched by PA ID.")
+        upload_cols = st.columns([1, 1.2, 1], gap="medium")
+        with upload_cols[0]:
+            st.download_button(
+                "Download Street Results CSV Template",
+                data=get_street_results_template_csv_bytes(),
+                file_name="candidate_connect_street_results_template.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with upload_cols[1]:
+            uploaded_results_file = st.file_uploader(
+                "Upload Street Results CSV",
+                type=["csv"],
+                key="street_results_upload",
+                help="Upload candidate street-list results using PA ID Number plus F, A, U, NH, and Yard Sign columns.",
+            )
+            if uploaded_results_file is not None:
+                upload_sig = f"{uploaded_results_file.name}:{getattr(uploaded_results_file, 'size', 0)}"
+                if st.session_state.get("street_results_upload_sig") != upload_sig:
+                    try:
+                        raw_upload_df = pd.read_csv(uploaded_results_file, dtype=str).fillna("")
+                        standardized_upload_df = standardize_uploaded_street_results(raw_upload_df)
+                        if standardized_upload_df.empty:
+                            st.warning("No usable PA ID Number column was found in the uploaded file.")
+                        else:
+                            st.session_state["street_results_df"] = standardized_upload_df
+                            st.session_state["street_results_upload_sig"] = upload_sig
+                            st.session_state["street_results_upload_name"] = uploaded_results_file.name
+                            st.success(f"Loaded {len(standardized_upload_df):,} street-result rows.")
+                    except Exception as exc:
+                        st.error(f"Could not read the street results CSV: {exc}")
+        with upload_cols[2]:
+            loaded_results = st.session_state.get("street_results_df")
+            if isinstance(loaded_results, pd.DataFrame) and not loaded_results.empty:
+                st.caption(f"Loaded rows: {len(loaded_results):,}")
+                st.caption(f"Source: {st.session_state.get('street_results_upload_name', 'uploaded CSV')}")
+                if st.button("Clear Uploaded Street Results", use_container_width=True):
+                    st.session_state["street_results_df"] = pd.DataFrame(columns=["PA ID Number", "F", "A", "U", "NH", "Yard Sign", "Notes"])
+                    st.session_state["street_results_filters"] = {}
+                    st.session_state.pop("street_results_upload_sig", None)
+                    st.session_state.pop("street_results_upload_name", None)
+                    st.rerun()
+            else:
+                st.caption("No street results uploaded yet.")
+
+        loaded_results = st.session_state.get("street_results_df")
+        if isinstance(loaded_results, pd.DataFrame) and not loaded_results.empty:
+            st.caption("These tracking filters only affect the Street List PDF, so you can reprint candidate follow-up lists without changing the dashboard counts.")
+            filter_defaults = st.session_state.get("street_results_filters", {}) or {}
+            street_filter_cols = st.columns(5, gap="small")
+            street_results_filters = {}
+            for col, field in zip(street_filter_cols, ["F", "A", "U", "NH", "Yard Sign"]):
+                with col:
+                    street_results_filters[field] = st.selectbox(
+                        field,
+                        ["All", "Marked", "Unmarked"],
+                        index=["All", "Marked", "Unmarked"].index(filter_defaults.get(field, "All")),
+                        key=f"street_results_filter_{field}",
+                    )
+            st.session_state["street_results_filters"] = street_results_filters
+        else:
+            st.caption("Upload a street-results CSV if you want the candidate's F, A, U, NH, and Yard Sign marks to refill on the Street List or filter the Street List PDF.")
+
         pdf_cols = st.columns(2, gap="medium")
         with pdf_cols[0]:
             if st.button("Prepare Street List PDF", use_container_width=True):
