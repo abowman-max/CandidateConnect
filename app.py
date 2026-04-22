@@ -79,6 +79,22 @@ st.markdown("""
 .cc-mini-table tr.total-row td {font-weight:700; border-top:1px solid #dcd6d6;}
 .cc-swatch {display:inline-block; width:9px; height:9px; border-radius:2px; vertical-align:middle; margin-right:8px; position:relative; top:-1px; border:1px solid rgba(0,0,0,.08);}
 .empty-shell {padding: 1.2rem 1rem; text-align:center; color:#556273;}
+.lookup-result-card {border:1px solid #d9dfe8; border-radius:14px; background:#fff; padding:.8rem .9rem; margin:.2rem 0 .35rem 0; box-shadow:0 1px 2px rgba(0,0,0,.03);} 
+.lookup-result-card.selected {border:2px solid #2b6fd3; background:#f7fbff;}
+.lookup-result-line0 {font-size:15px; font-weight:800; color:#1f2d3d; margin-bottom:.22rem;}
+.lookup-result-line1, .lookup-result-line2, .lookup-result-line3 {font-size:13px; color:#334155; line-height:1.35;}
+.lookup-vh-wrap {margin:.35rem 0 .85rem 0;}
+.lookup-vh-title {font-size:16px; font-weight:800; color:#22324a; margin:.15rem 0 .35rem 0;}
+.lookup-vh-table {width:100%; border-collapse:collapse; font-size:12px;}
+.lookup-vh-table th, .lookup-vh-table td {border:1px solid #d9dde4; padding:7px 6px; text-align:center;}
+.lookup-vh-table th {background:#f4f6f8; font-weight:800; color:#24303f;}
+.lookup-vh-rowhead {background:#fafafa; font-weight:700; text-align:left !important; min-width:76px;}
+.lookup-vh-cell {background:#ffffff; font-weight:700; min-width:48px;}
+.lookup-vh-dnv {background:#eceff3; color:#8a94a6;}
+.lookup-legend {display:flex; flex-wrap:wrap; gap:16px; font-size:12px; color:#475569; margin-top:.2rem; padding:.55rem .7rem; border:1px solid #dde3ea; border-radius:10px; background:#fff;}
+.lookup-legend-icon {display:inline-block; min-width:18px; text-align:center; margin-right:4px;}
+.lookup-legend-swatch {display:inline-block; width:14px; height:14px; vertical-align:middle; margin-right:6px; background:#eceff3; border:1px solid #c8d0da; border-radius:3px;}
+
 @media (max-width: 1100px) {
   .brand-grid {grid-template-columns: 1fr; gap:10px;}
   .brand-left, .brand-right {justify-content:center;}
@@ -3376,26 +3392,95 @@ def format_vote_method_label(value: str) -> str:
     mapping = {"AP": "At Poll", "MB": "Mail Ballot", "PROVISIONAL": "Provisional", "PV": "Provisional", "P": "Provisional", "": "DNV"}
     return mapping.get(raw, raw or "DNV")
 
-def build_lookup_vote_history_table(row, election_prefix: str, start_year: int = 26, end_year: int = 20) -> pd.DataFrame:
-    records = []
-    election_type = "General" if election_prefix.upper() == "G" else "Primary"
-    for yy in range(start_year, end_year - 1, -1):
-        records.append({
-            "Election": f"{election_type} {2000 + yy}",
-            "Party": get_lookup_value(row, [f"{election_prefix}{yy}_P"]) or "—",
-            "Vote Method": format_vote_method_label(get_lookup_value(row, [f"{election_prefix}{yy}_VM"])),
-        })
-    return pd.DataFrame(records)
+
+def vote_method_icon(value: str) -> str:
+    raw = normalize_export_text(value).upper()
+    if raw == "MB":
+        return "✉️"
+    if raw == "AP":
+        return "🗳️"
+    if raw in {"PROVISIONAL", "PV", "P"}:
+        return "🟨"
+    return ""
+
+
+def vote_method_title(value: str) -> str:
+    raw = normalize_export_text(value).upper()
+    if raw == "MB":
+        return "Mail Ballot"
+    if raw == "AP":
+        return "At Poll"
+    if raw in {"PROVISIONAL", "PV", "P"}:
+        return "Provisional"
+    return "Did Not Vote"
+
+
+def render_lookup_vote_history_matrix(row, election_prefix: str, title: str, start_year: int = 26, end_year: int = 20):
+    years = list(range(start_year, end_year - 1, -1))
+    header_cells = ''.join([f'<th>{election_prefix}{yy}</th>' for yy in years])
+    party_cells = []
+    method_cells = []
+    for yy in years:
+        party_val = get_lookup_value(row, [f"{election_prefix}{yy}_P"]).upper() or "—"
+        vm_raw = normalize_export_text(get_lookup_value(row, [f"{election_prefix}{yy}_VM"])).upper()
+        not_voted = vm_raw == ""
+        cell_class = "lookup-vh-cell lookup-vh-dnv" if not_voted else "lookup-vh-cell"
+        method_text = vote_method_icon(vm_raw) if vm_raw else ""
+        title_attr = vote_method_title(vm_raw)
+        party_cells.append(f'<td class="{cell_class}">{party_val}</td>')
+        method_cells.append(f'<td class="{cell_class}" title="{title_attr}">{method_text}</td>')
+
+    html = f'''<div class="lookup-vh-wrap">
+  <div class="lookup-vh-title">{title}</div>
+  <table class="lookup-vh-table">
+    <thead>
+      <tr><th></th>{header_cells}</tr>
+    </thead>
+    <tbody>
+      <tr><td class="lookup-vh-rowhead">Party</td>{''.join(party_cells)}</tr>
+      <tr><td class="lookup-vh-rowhead">Method</td>{''.join(method_cells)}</tr>
+    </tbody>
+  </table>
+</div>'''
+    st.markdown(html, unsafe_allow_html=True)
+
 
 def render_lookup_vote_history_tables(row):
-    st.markdown("#### Vote History Detail")
-    cols = st.columns(2, gap="medium")
-    with cols[0]:
-        st.markdown("**General Elections**")
-        st.dataframe(build_lookup_vote_history_table(row, "G"), use_container_width=True, hide_index=True)
-    with cols[1]:
-        st.markdown("**Primary Elections**")
-        st.dataframe(build_lookup_vote_history_table(row, "P"), use_container_width=True, hide_index=True)
+    st.markdown("#### Election History")
+    render_lookup_vote_history_matrix(row, "G", "General Elections")
+    render_lookup_vote_history_matrix(row, "P", "Primary Elections")
+    legend_html = '''<div class="lookup-legend">
+  <span><span class="lookup-legend-icon">✉️</span> Mail Ballot</span>
+  <span><span class="lookup-legend-icon">🗳️</span> At Poll</span>
+  <span><span class="lookup-legend-icon">🟨</span> Provisional</span>
+  <span><span class="lookup-legend-swatch"></span> Did Not Vote</span>
+</div>'''
+    st.markdown(legend_html, unsafe_allow_html=True)
+
+
+def render_lookup_result_card(result_row, selected: bool):
+    title = normalize_name_value(normalize_export_text(result_row.get("_LookupName", ""))) or "Unnamed voter"
+    party = normalize_export_text(result_row.get("Party", ""))
+    age_text = normalize_numeric_string(result_row.get("Age", ""))
+    title_parts = [title]
+    if party:
+        title_parts.append(party)
+    if age_text:
+        title_parts.append(age_text)
+    line0 = ", ".join(title_parts)
+    line1 = normalize_address_value(normalize_export_text(result_row.get("_LookupAddress", "")))
+    line2 = normalize_export_text(result_row.get("_LookupCityStateZip", ""))
+    county = normalize_export_text(result_row.get("County", ""))
+    county = f"{county} County" if county and "county" not in county.lower() else county
+    card_class = "lookup-result-card selected" if selected else "lookup-result-card"
+    html = f'''<div class="{card_class}">
+  <div class="lookup-result-line0">{line0}</div>
+  <div class="lookup-result-line1">{line1}</div>
+  <div class="lookup-result-line2">{line2}</div>
+  <div class="lookup-result-line3">{county}</div>
+</div>'''
+    st.markdown(html, unsafe_allow_html=True)
+
 
 def render_voter_lookup_results():
     results_df = pd.DataFrame(st.session_state.get("lookup_results_records", []))
@@ -3416,23 +3501,18 @@ def render_voter_lookup_results():
         return
 
     st.caption(f"{len(results_df):,} result(s) found for: {lookup_query}")
-    left_col, right_col = st.columns([1.0, 1.9], gap="medium")
+    left_col, right_col = st.columns([1.05, 1.95], gap="large")
 
     with left_col:
-        st.markdown("#### Results")
+        st.markdown("#### Search Results")
         for _, result_row in results_df.iterrows():
-            title = normalize_name_value(normalize_export_text(result_row.get("_LookupName", ""))) or "Unnamed voter"
-            age_text = normalize_numeric_string(result_row.get("Age", ""))
-            if age_text:
-                title = f"{title}, {age_text}"
-            line1 = normalize_address_value(normalize_export_text(result_row.get("_LookupAddress", "")))
-            line2 = normalize_export_text(result_row.get("_LookupCityStateZip", ""))
-            county = normalize_export_text(result_row.get("County", ""))
-            card_label = "\n".join([x for x in [title, line1, line2, county] if x])
-            is_selected = st.session_state.get("lookup_selected_key", "") == result_row.get("_LookupRowKey", "")
+            row_key = result_row.get("_LookupRowKey", "")
+            is_selected = st.session_state.get("lookup_selected_key", "") == row_key
+            render_lookup_result_card(result_row, is_selected)
+            button_label = "Selected" if is_selected else "View Voter"
             button_type = "primary" if is_selected else "secondary"
-            if st.button(card_label, key=f'lookup_pick_{result_row.get("_LookupRowKey", "")}', use_container_width=True, type=button_type):
-                st.session_state["lookup_selected_key"] = result_row.get("_LookupRowKey", "")
+            if st.button(button_label, key=f'lookup_pick_{row_key}', use_container_width=True, type=button_type):
+                st.session_state["lookup_selected_key"] = row_key
                 st.rerun()
 
     selected_key = st.session_state.get("lookup_selected_key", "")
@@ -3481,12 +3561,6 @@ def render_voter_lookup_results():
                 ("Permanent Mail", get_lookup_value(selected_row, ["MB_PERM", "MB_Perm", "MB_Pern"])),
                 ("Mail Ballot Score", get_lookup_value(selected_row, ["MB_AProp_Score", "MMB_AProp_Score"], formatter=lambda v: normalize_numeric_string(v))),
             ])
-
-        st.markdown("#### Vote History Summary")
-        vote_cols = st.columns(3, gap="small")
-        vote_cols[0].metric("All Elections (V4A)", get_lookup_value(selected_row, ["V4A"], formatter=lambda v: normalize_numeric_string(v)) or "—")
-        vote_cols[1].metric("General (V4G)", get_lookup_value(selected_row, ["V4G"], formatter=lambda v: normalize_numeric_string(v)) or "—")
-        vote_cols[2].metric("Primary (V4P)", get_lookup_value(selected_row, ["V4P"], formatter=lambda v: normalize_numeric_string(v)) or "—")
 
         render_lookup_vote_history_tables(selected_row)
 
@@ -3800,23 +3874,11 @@ with st.sidebar:
         render_lookup_sidebar(st.session_state.active_filters, cols)
 
 if not st.session_state.data_loaded:
-    zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Mobiles", "0"), ("Unique Precincts", "0")]
-    metric_cols = st.columns(5, gap="small")
-    for col, (label, value) in zip(metric_cols, zeros):
-        with col:
-            st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
-    divider()
     st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to load</div><div class="tiny-muted">Click <strong>Load Voter Data</strong> in the sidebar to open the R2 index shards with DuckDB.</div></div>', unsafe_allow_html=True)
     st.stop()
 
 if not st.session_state.filters_applied and not st.session_state.get("lookup_view_active", False):
-    zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Mobiles", "0"), ("Unique Precincts", "0")]
-    metric_cols = st.columns(5, gap="small")
-    for col, (label, value) in zip(metric_cols, zeros):
-        with col:
-            st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
-    divider()
-    st.markdown('<div class="section-card empty-shell"><div class="small-header">Filters are loaded</div><div class="tiny-muted">Choose your filters in the sidebar and click <strong>Apply Filters</strong> to run counts and charts.</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-card empty-shell"><div class="small-header">Create Universe is ready</div><div class="tiny-muted">Choose your filters in the left menu and click <strong>Apply Filters</strong> to run counts and charts, or open <strong>Voter Lookup</strong> to search the statewide file.</div></div>', unsafe_allow_html=True)
     st.stop()
 
 active = st.session_state.active_filters
