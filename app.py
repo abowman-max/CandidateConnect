@@ -129,8 +129,16 @@ def sql_string_literal(value: str) -> str:
 
 @st.cache_resource(show_spinner=False)
 def get_conn():
+    swap_dir = Path("/tmp/candidate_connect_duckdb_swap")
+    swap_dir.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(database=":memory:")
-    con.execute("PRAGMA threads=4")
+    con.execute("PRAGMA threads=2")
+    con.execute("PRAGMA preserve_insertion_order=false")
+    con.execute("PRAGMA temp_directory='/tmp/candidate_connect_duckdb_swap'")
+    try:
+        con.execute("PRAGMA memory_limit='768MB'")
+    except Exception:
+        pass
     return con
 
 def first_existing(columns, candidates):
@@ -795,7 +803,7 @@ def get_filtered_voter_count_fast(active_filters, columns) -> int:
 
 def use_large_filter_mode(active_filters, columns) -> bool:
     try:
-        return get_filtered_voter_count_fast(active_filters, columns) >= 500000
+        return get_filtered_voter_count_fast(active_filters, columns) >= 100000
     except Exception:
         return False
 
@@ -3555,51 +3563,77 @@ def build_voter_report_pdf_bytes(row) -> bytes:
     width, height = landscape(letter)
     margin_x = 24
 
-    # Branding header
     header_top = height - 18
+    header_logo_x = margin_x
+    header_logo_y = header_top - 36
     if CC_LOGO.exists():
         try:
-            c.drawImage(ImageReader(str(CC_LOGO)), margin_x, header_top - 42, width=118, height=40, preserveAspectRatio=True, mask='auto')
+            c.drawImage(
+                ImageReader(str(CC_LOGO)),
+                header_logo_x,
+                header_logo_y,
+                width=104,
+                height=34,
+                preserveAspectRatio=True,
+                mask='auto',
+            )
         except Exception:
             pass
-    c.setFont("Helvetica-Bold", 17)
+
+    title_x = header_logo_x + 116
     c.setFillColor(colors.HexColor("#173B73"))
-    c.drawString(margin_x + 128, header_top - 12, "Candidate Connect")
+    c.setFont("Helvetica-Bold", 13)
+    c.drawString(title_x, header_top - 6, "Candidate Connect")
     c.setFont("Helvetica", 8)
     c.setFillColor(colors.HexColor("#4B5563"))
-    c.drawString(margin_x + 128, header_top - 25, "Voter Lookup Report")
-    c.drawString(margin_x + 128, header_top - 36, datetime.now().strftime("Generated %m/%d/%Y %I:%M %p"))
-    c.setFont("Helvetica-Bold", 8)
-    c.drawRightString(width - 92, header_top - 10, "Powered By")
+    c.drawString(title_x, header_top - 20, "Voter Lookup Report")
+    c.drawString(title_x, header_top - 31, datetime.now().strftime("Generated %m/%d/%Y %I:%M %p"))
+
+    powered_x = width - 140
+    c.setFont("Helvetica-Bold", 9)
+    c.setFillColor(colors.HexColor("#4B5563"))
+    c.drawString(powered_x, header_top - 6, "Powered By")
     if TSS_LOGO.exists():
         try:
-            c.drawImage(ImageReader(str(TSS_LOGO)), width - 86, header_top - 34, width=62, height=20, preserveAspectRatio=True, mask='auto')
+            c.drawImage(
+                ImageReader(str(TSS_LOGO)),
+                powered_x + 44,
+                header_top - 26,
+                width=56,
+                height=18,
+                preserveAspectRatio=True,
+                mask='auto',
+            )
         except Exception:
             pass
+
+    divider_y = header_top - 42
     c.setStrokeColor(colors.HexColor("#D7DCE3"))
-    c.line(margin_x, header_top - 50, width - margin_x, header_top - 50)
+    c.line(margin_x, divider_y, width - margin_x, divider_y)
 
     voter_name = build_lookup_full_name(row) or "Unnamed voter"
-    c.setFont("Helvetica-Bold", 18)
+    name_y = divider_y - 18
+    c.setFont("Helvetica-Bold", 20)
     c.setFillColor(colors.HexColor("#8A1C1C"))
-    c.drawString(margin_x, height - 82, voter_name.upper())
+    c.drawString(margin_x, name_y, voter_name.upper())
     c.setFillColor(colors.black)
 
-    y = height - 112
+    address_title_y = name_y - 28
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(margin_x, y, "Address")
+    c.drawString(margin_x, address_title_y, "Address")
     c.setFont("Helvetica", 10)
+    address_line_y = address_title_y - 16
     address_lines = [ln for ln in build_lookup_address(row).split("\n") if normalize_export_text(ln)]
     for line in address_lines:
-        y -= 14
-        c.drawString(margin_x, y, line)
+        c.drawString(margin_x, address_line_y, line)
+        address_line_y -= 14
 
-    left_x, mid_x, right_x = margin_x, 260, 520
-    top_y = min(y - 12, height - 150)
+    left_x, mid_x, right_x = margin_x, 285, 545
+    top_y = address_line_y - 4
 
     c.setFont("Helvetica-Bold", 10)
     c.drawString(left_x, top_y, "Districts + Geography")
-    yy = top_y - 18
+    left_end_y = top_y - 18
     for label, value in [
         ("County", get_lookup_value(row, ["County"])),
         ("Municipality", get_lookup_value(row, ["Municipality"])),
@@ -3610,14 +3644,14 @@ def build_voter_report_pdf_bytes(row) -> bytes:
         ("School District", get_lookup_value(row, ["School District"])),
     ]:
         c.setFont("Helvetica-Bold", 9)
-        c.drawString(left_x, yy, f"{label}:")
+        c.drawString(left_x, left_end_y, f"{label}:")
         c.setFont("Helvetica", 9)
-        c.drawString(left_x + 82, yy, normalize_export_text(value) or "—")
-        yy -= 14
+        c.drawString(left_x + 88, left_end_y, normalize_export_text(value) or "—")
+        left_end_y -= 14
 
     c.setFont("Helvetica-Bold", 10)
     c.drawString(mid_x, top_y, "Voter Snapshot")
-    yy = top_y - 18
+    mid_end_y = top_y - 18
     for label, value in [
         ("DOB", get_lookup_value(row, ["DOB", "DateOfBirth", "Birth Date"], formatter=format_lookup_date)),
         ("Reg Date", get_lookup_value(row, ["RegistrationDate", "Registration Date"], formatter=format_lookup_date)),
@@ -3629,14 +3663,14 @@ def build_voter_report_pdf_bytes(row) -> bytes:
         ("PA ID", get_lookup_value(row, ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "VoterID"], formatter=lambda v: normalize_numeric_string(v))),
     ]:
         c.setFont("Helvetica-Bold", 9)
-        c.drawString(mid_x, yy, f"{label}:")
+        c.drawString(mid_x, mid_end_y, f"{label}:")
         c.setFont("Helvetica", 9)
-        c.drawString(mid_x + 70, yy, normalize_export_text(value) or "—")
-        yy -= 14
+        c.drawString(mid_x + 72, mid_end_y, normalize_export_text(value) or "—")
+        mid_end_y -= 14
 
     c.setFont("Helvetica-Bold", 10)
     c.drawString(right_x, top_y, "Contact + Mail Ballot")
-    yy = top_y - 18
+    right_end_y = top_y - 18
     for label, value in [
         ("Mobile", format_lookup_phone(get_lookup_value(row, ["Mobile"]))),
         ("Landline", format_lookup_phone(get_lookup_value(row, ["Landline", "PrimaryPhone", "Phone"]))),
@@ -3647,22 +3681,24 @@ def build_voter_report_pdf_bytes(row) -> bytes:
         ("MB Score", get_lookup_value(row, ["MB_AProp_Score", "MMB_AProp_Score"], formatter=lambda v: normalize_numeric_string(v))),
     ]:
         c.setFont("Helvetica-Bold", 9)
-        c.drawString(right_x, yy, f"{label}:")
+        c.drawString(right_x, right_end_y, f"{label}:")
         c.setFont("Helvetica", 9)
-        c.drawString(right_x + 62, yy, (normalize_export_text(value) or "—")[:30])
-        yy -= 14
+        c.drawString(right_x + 66, right_end_y, (normalize_export_text(value) or "—")[:32])
+        right_end_y -= 14
 
-    table_y = 360
+    section_bottom_y = min(left_end_y, mid_end_y, right_end_y)
+    table_y = max(250, section_bottom_y - 16)
     table_y = _draw_pdf_vote_history_table(c, row, margin_x, table_y, "General Elections", "G")
     table_y = _draw_pdf_vote_history_table(c, row, margin_x, table_y - 8, "Primary Elections", "P")
 
+    legend_y = max(40, table_y - 12)
     c.setFont("Helvetica-Bold", 9)
-    c.drawString(margin_x, 72, "Legend:")
+    c.drawString(margin_x, legend_y, "Legend:")
     c.setFont("Helvetica", 9)
     legend_items = ["MB = Mail Ballot", "AP = At Poll", "P = Provisional", "DNV = Did Not Vote"]
     lx = margin_x + 48
     for item in legend_items:
-        c.drawString(lx, 72, item)
+        c.drawString(lx, legend_y, item)
         lx += 128
 
     c.showPage()
