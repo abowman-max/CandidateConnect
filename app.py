@@ -3371,6 +3371,32 @@ def render_lookup_field_block(title: str, rows: list[tuple[str, str]]):
         st.dataframe(pd.DataFrame(clean_rows), use_container_width=True, hide_index=True)
 
 
+def format_vote_method_label(value: str) -> str:
+    raw = normalize_export_text(value).upper()
+    mapping = {"AP": "At Poll", "MB": "Mail Ballot", "PROVISIONAL": "Provisional", "PV": "Provisional", "P": "Provisional", "": "DNV"}
+    return mapping.get(raw, raw or "DNV")
+
+def build_lookup_vote_history_table(row, election_prefix: str, start_year: int = 26, end_year: int = 20) -> pd.DataFrame:
+    records = []
+    election_type = "General" if election_prefix.upper() == "G" else "Primary"
+    for yy in range(start_year, end_year - 1, -1):
+        records.append({
+            "Election": f"{election_type} {2000 + yy}",
+            "Party": get_lookup_value(row, [f"{election_prefix}{yy}_P"]) or "—",
+            "Vote Method": format_vote_method_label(get_lookup_value(row, [f"{election_prefix}{yy}_VM"])),
+        })
+    return pd.DataFrame(records)
+
+def render_lookup_vote_history_tables(row):
+    st.markdown("#### Vote History Detail")
+    cols = st.columns(2, gap="medium")
+    with cols[0]:
+        st.markdown("**General Elections**")
+        st.dataframe(build_lookup_vote_history_table(row, "G"), use_container_width=True, hide_index=True)
+    with cols[1]:
+        st.markdown("**Primary Elections**")
+        st.dataframe(build_lookup_vote_history_table(row, "P"), use_container_width=True, hide_index=True)
+
 def render_voter_lookup_results():
     results_df = pd.DataFrame(st.session_state.get("lookup_results_records", []))
     lookup_query = st.session_state.get("lookup_query", "")
@@ -3389,8 +3415,8 @@ def render_voter_lookup_results():
         st.markdown('</div>', unsafe_allow_html=True)
         return
 
-    st.caption(f"{len(results_df):,} result(s) loaded for: {lookup_query}")
-    left_col, right_col = st.columns([1.05, 1.95], gap="medium")
+    st.caption(f"{len(results_df):,} result(s) found for: {lookup_query}")
+    left_col, right_col = st.columns([1.0, 1.9], gap="medium")
 
     with left_col:
         st.markdown("#### Results")
@@ -3434,6 +3460,9 @@ def render_voter_lookup_results():
             render_lookup_field_block("Voter Details", [
                 ("Date of Birth", get_lookup_value(selected_row, ["DOB", "DateOfBirth", "Birth Date"], formatter=format_lookup_date)),
                 ("Registration Date", get_lookup_value(selected_row, ["RegistrationDate", "Registration Date"], formatter=format_lookup_date)),
+                ("Last Vote", get_lookup_value(selected_row, ["Last Vote", "LastVote"])),
+                ("Last Change", get_lookup_value(selected_row, ["Last Change", "LastChange"])),
+                ("Last Change Date", get_lookup_value(selected_row, ["Last Change Date", "LastChangeDate"], formatter=format_lookup_date)),
                 ("County", get_lookup_value(selected_row, ["County"])),
                 ("Municipality", get_lookup_value(selected_row, ["Municipality"])),
                 ("Precinct", get_lookup_value(selected_row, ["Precinct"])),
@@ -3458,6 +3487,8 @@ def render_voter_lookup_results():
         vote_cols[0].metric("All Elections (V4A)", get_lookup_value(selected_row, ["V4A"], formatter=lambda v: normalize_numeric_string(v)) or "—")
         vote_cols[1].metric("General (V4G)", get_lookup_value(selected_row, ["V4G"], formatter=lambda v: normalize_numeric_string(v)) or "—")
         vote_cols[2].metric("Primary (V4P)", get_lookup_value(selected_row, ["V4P"], formatter=lambda v: normalize_numeric_string(v)) or "—")
+
+        render_lookup_vote_history_tables(selected_row)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -3535,8 +3566,6 @@ with st.sidebar:
     else:
         cols = st.session_state.columns
         opts = st.session_state.options
-
-        render_lookup_sidebar(st.session_state.active_filters, cols)
 
         with st.expander("Create Universe", expanded=False):
             with st.form("filter_form", clear_on_submit=False):
@@ -3768,26 +3797,28 @@ with st.sidebar:
                     else:
                         st.warning("Enter a universe name first.")
 
+        render_lookup_sidebar(st.session_state.active_filters, cols)
 
-    if not st.session_state.data_loaded:
-        zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Mobiles", "0"), ("Unique Precincts", "0")]
-        metric_cols = st.columns(5, gap="small")
-        for col, (label, value) in zip(metric_cols, zeros):
-            with col:
-                st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
-        divider()
-        st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to load</div><div class="tiny-muted">Click <strong>Load Voter Data</strong> in the sidebar to open the R2 index shards with DuckDB.</div></div>', unsafe_allow_html=True)
-        st.stop()
+if not st.session_state.data_loaded:
+    zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Mobiles", "0"), ("Unique Precincts", "0")]
+    metric_cols = st.columns(5, gap="small")
+    for col, (label, value) in zip(metric_cols, zeros):
+        with col:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
+    divider()
+    st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to load</div><div class="tiny-muted">Click <strong>Load Voter Data</strong> in the sidebar to open the R2 index shards with DuckDB.</div></div>', unsafe_allow_html=True)
+    st.stop()
 
-    if not st.session_state.filters_applied:
-        zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Mobiles", "0"), ("Unique Precincts", "0")]
-        metric_cols = st.columns(5, gap="small")
-        for col, (label, value) in zip(metric_cols, zeros):
-            with col:
-                st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
-        divider()
-        st.markdown('<div class="section-card empty-shell"><div class="small-header">Filters are loaded</div><div class="tiny-muted">Choose your filters in the sidebar and click <strong>Apply Filters</strong> to run counts and charts.</div></div>', unsafe_allow_html=True)
-        st.stop()
+if not st.session_state.filters_applied and not st.session_state.get("lookup_view_active", False):
+    zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Mobiles", "0"), ("Unique Precincts", "0")]
+    metric_cols = st.columns(5, gap="small")
+    for col, (label, value) in zip(metric_cols, zeros):
+        with col:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
+    divider()
+    st.markdown('<div class="section-card empty-shell"><div class="small-header">Filters are loaded</div><div class="tiny-muted">Choose your filters in the sidebar and click <strong>Apply Filters</strong> to run counts and charts.</div></div>', unsafe_allow_html=True)
+    st.stop()
+
 active = st.session_state.active_filters
 columns = st.session_state.columns
 
@@ -3807,21 +3838,20 @@ with st.spinner("Running DuckDB queries..."):
         age_df = query_chart(active, columns, "_AgeRange", "Age Range")
         area_choices = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in columns]
 
-metric_cols = st.columns(5, gap="small")
-metric_values = [
-    ("Voters", f"{safe_int(metrics.get('voters')):,}"),
-    ("Households", f"{safe_int(metrics.get('households')):,}"),
-    ("Emails", f"{safe_int(metrics.get('emails')):,}"),
-    ("Mobiles", f"{safe_int(metrics.get('mobiles')):,}"),
-    ("Unique Precincts", f"{safe_int(metrics.get('unique_precincts')):,}"),
-]
-for col, (label, value) in zip(metric_cols, metric_values):
-    with col:
-        st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
-
 if st.session_state.get("lookup_view_active", False):
     render_voter_lookup_results()
 else:
+    metric_cols = st.columns(5, gap="small")
+    metric_values = [
+        ("Voters", f"{safe_int(metrics.get('voters')):,}"),
+        ("Households", f"{safe_int(metrics.get('households')):,}"),
+        ("Emails", f"{safe_int(metrics.get('emails')):,}"),
+        ("Mobiles", f"{safe_int(metrics.get('mobiles')):,}"),
+        ("Unique Precincts", f"{safe_int(metrics.get('unique_precincts')):,}"),
+    ]
+    for col, (label, value) in zip(metric_cols, metric_values):
+        with col:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
     campaign_cols = st.columns(4, gap="small")
     campaign_values = [
         ("Contacted", f"{safe_int(followup_stats.get('contacted_pct'))}%", f"{safe_int(followup_stats.get('contacted_count')):,} voters"),
