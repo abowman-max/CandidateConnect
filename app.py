@@ -445,11 +445,14 @@ def current_filter_clause(active, columns):
     vote_history_range = active.get("vote_history_range")
     if vote_history_range is not None:
         low, high = vote_history_range
-        if str(vote_history_type) == "General":
-            where.append("coalesce(try_cast(nullif(trim(cast(_VoteHistoryGeneral as varchar)), '') as integer), 0) >= ? AND coalesce(try_cast(nullif(trim(cast(_VoteHistoryGeneral as varchar)), '') as integer), 0) <= ?")
+        if str(vote_history_type) == "General" and "V4G" in columns:
+            where.append('coalesce(try_cast(nullif(trim(cast("V4G" as varchar)), '') as integer), 0) >= ? AND coalesce(try_cast(nullif(trim(cast("V4G" as varchar)), '') as integer), 0) <= ?')
             params.extend([int(low), int(high)])
-        elif str(vote_history_type) == "Primary":
-            where.append("coalesce(try_cast(nullif(trim(cast(_VoteHistoryPrimary as varchar)), '') as integer), 0) >= ? AND coalesce(try_cast(nullif(trim(cast(_VoteHistoryPrimary as varchar)), '') as integer), 0) <= ?")
+        elif str(vote_history_type) == "Primary" and "V4P" in columns:
+            where.append('coalesce(try_cast(nullif(trim(cast("V4P" as varchar)), '') as integer), 0) >= ? AND coalesce(try_cast(nullif(trim(cast("V4P" as varchar)), '') as integer), 0) <= ?')
+            params.extend([int(low), int(high)])
+        elif "V4A" in columns:
+            where.append('coalesce(try_cast(nullif(trim(cast("V4A" as varchar)), '') as integer), 0) >= ? AND coalesce(try_cast(nullif(trim(cast("V4A" as varchar)), '') as integer), 0) <= ?')
             params.extend([int(low), int(high)])
         else:
             where.append("coalesce(try_cast(nullif(trim(cast(_VoteHistory as varchar)), '') as integer), 0) >= ? AND coalesce(try_cast(nullif(trim(cast(_VoteHistory as varchar)), '') as integer), 0) <= ?")
