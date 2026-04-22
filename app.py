@@ -346,18 +346,6 @@ def build_view_sql(columns, local_paths):
     else:
         exprs.append("'' as _VoteHistory")
 
-    vote_hist_general_col = first_existing(columns, ["V4G"])
-    vote_hist_primary_col = first_existing(columns, ["V4P"])
-    if vote_hist_general_col:
-        exprs.append(f"upper(trim(coalesce(cast({q(vote_hist_general_col)} as varchar), ''))) as _VoteHistoryGeneral")
-    else:
-        exprs.append("'' as _VoteHistoryGeneral")
-
-    if vote_hist_primary_col:
-        exprs.append(f"upper(trim(coalesce(cast({q(vote_hist_primary_col)} as varchar), ''))) as _VoteHistoryPrimary")
-    else:
-        exprs.append("'' as _VoteHistoryPrimary")
-
     if mib_applied_col:
         exprs.append(f"upper(trim(coalesce(cast({q(mib_applied_col)} as varchar), ''))) as _MIBApplied")
     else:
@@ -454,9 +442,6 @@ def current_filter_clause(active, columns):
         elif "V4A" in columns:
             where.append("coalesce(try_cast(nullif(trim(cast(\"V4A\" as varchar)), '') as integer), 0) >= ? AND coalesce(try_cast(nullif(trim(cast(\"V4A\" as varchar)), '') as integer), 0) <= ?")
             params.extend([int(low), int(high)])
-        else:
-            where.append("coalesce(try_cast(nullif(trim(cast(_VoteHistory as varchar)), '') as integer), 0) >= ? AND coalesce(try_cast(nullif(trim(cast(_VoteHistory as varchar)), '') as integer), 0) <= ?")
-            params.extend([int(low), int(high)])
     if active.get("mib_applied_pick"):
         picked = active["mib_applied_pick"]
         where.append(f"_MIBApplied IN ({sql_literal_list(picked)})")
@@ -521,6 +506,7 @@ def get_basic_options(columns):
     options["age_range_vals"] = get_distinct_options("_AgeRange", "_AgeRange")
     options["hh_party_vals"] = get_distinct_options("HH-Party") if "HH-Party" in columns else []
     options["calc_party_vals"] = get_distinct_options("CalculatedParty") if "CalculatedParty" in columns else []
+    options["vote_history_vals"] = ordered_vote_history_values(get_distinct_options("_VoteHistory", "_VoteHistory")) if "V4A" in columns else []
     options["mib_applied_vals"] = get_distinct_options("_MIBApplied", "_MIBApplied")
     options["mib_ballot_vals"] = get_distinct_options("_MIBBallot", "_MIBBallot")
     options["mb_perm_vals"] = get_distinct_options("_MBPerm", "_MBPerm")
@@ -1078,18 +1064,6 @@ def build_detail_export_sql(detail_paths, active_filters):
         exprs.append(f"upper(trim(coalesce(cast({q(vote_hist_col)} as varchar), ''))) as _VoteHistory")
     else:
         exprs.append("'' as _VoteHistory")
-
-    vote_hist_general_col = first_existing(columns, ["V4G"])
-    vote_hist_primary_col = first_existing(columns, ["V4P"])
-    if vote_hist_general_col:
-        exprs.append(f"upper(trim(coalesce(cast({q(vote_hist_general_col)} as varchar), ''))) as _VoteHistoryGeneral")
-    else:
-        exprs.append("'' as _VoteHistoryGeneral")
-
-    if vote_hist_primary_col:
-        exprs.append(f"upper(trim(coalesce(cast({q(vote_hist_primary_col)} as varchar), ''))) as _VoteHistoryPrimary")
-    else:
-        exprs.append("'' as _VoteHistoryPrimary")
 
     if mib_applied_col:
         exprs.append(f"upper(trim(coalesce(cast({q(mib_applied_col)} as varchar), ''))) as _MIBApplied")
@@ -3174,7 +3148,7 @@ with st.sidebar:
                     min_value=0,
                     max_value=4,
                     value=(int(current_range[0]), int(current_range[1])),
-                    help="Select a range from 0 to 4 based on the vote history type chosen above.",
+                    help="0-4 elections in the selected vote history field.",
                 )
 
                 mib_applied_pick = st.multiselect("Mail Ballot Application Status", opts.get("mib_applied_vals", []), default=st.session_state.active_filters.get("mib_applied_pick", []))
