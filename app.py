@@ -258,7 +258,7 @@ def ensure_index_shards():
 def get_schema(local_paths):
     con = get_conn()
     paths_sql = "[" + ", ".join(sql_string_literal(p) for p in local_paths) + "]"
-    df = con.execute(f"DESCRIBE SELECT * FROM read_parquet({paths_sql})").df()
+    df = con.execute(f"DESCRIBE SELECT * FROM read_parquet({paths_sql}, union_by_name=True)").df()
     return df["column_name"].tolist()
 
 def build_view_sql(columns, local_paths):
@@ -386,7 +386,7 @@ def build_view_sql(columns, local_paths):
             exprs.append("NULL::VARCHAR as _HouseholdKey")
 
     paths_sql = "[" + ", ".join(sql_string_literal(p) for p in local_paths) + "]"
-    return "CREATE OR REPLACE VIEW voters AS SELECT\n    " + ",\n    ".join(exprs) + f"\nFROM read_parquet({paths_sql})"
+    return "CREATE OR REPLACE VIEW voters AS SELECT\n    " + ",\n    ".join(exprs) + f"\nFROM read_parquet({paths_sql}, union_by_name=True)"
 
 def prepare_db(local_paths):
     con = get_conn()
@@ -1018,7 +1018,7 @@ def ensure_detail_shards():
 
 def build_detail_export_sql(detail_paths, active_filters):
     paths_sql = "[" + ", ".join(sql_string_literal(p) for p in detail_paths) + "]"
-    columns = get_conn().execute(f"DESCRIBE SELECT * FROM read_parquet({paths_sql})").df()["column_name"].tolist()
+    columns = get_conn().execute(f"DESCRIBE SELECT * FROM read_parquet({paths_sql}, union_by_name=True)").df()["column_name"].tolist()
 
     q = quote_ident
     status_col = first_existing_detail(columns, ["VoterStatus", "voterstatus"])
@@ -1112,7 +1112,7 @@ def build_detail_export_sql(detail_paths, active_filters):
         exprs.append("NULL::VARCHAR as _HouseholdKey")
 
     where_sql, params = current_filter_clause(active_filters, columns)
-    sql = "SELECT\n    " + ",\n    ".join(exprs) + f"\nFROM read_parquet({paths_sql})\n{where_sql}"
+    sql = "SELECT\n    " + ",\n    ".join(exprs) + f"\nFROM read_parquet({paths_sql}, union_by_name=True)\n{where_sql}"
     return sql, params
 
 def fetch_filtered_detail(active_filters):
@@ -3079,8 +3079,7 @@ header_html = f"""
     <div class="brand-left">{f'<img class="logo-cc" src="{cc_logo_uri}"/>' if cc_logo_uri else ''}</div>
     <div class="brand-center">
       <div class="brand-title">Candidate Connect</div>
-      <div class="brand-sub">DuckDB + R2 Pass 1: Fast counts and filters on R2 index shards</div>
-      <div class="brand-status">Storage: Cloudflare R2 Public Read &nbsp;&nbsp;|&nbsp;&nbsp; Last Local Manifest: {file_modified_text(LOCAL_MANIFEST)}</div>
+      <div class="brand-sub">Candidate data tools for universe creation, exports, reports, and voter lookup</div>
     </div>
     <div class="brand-right"><div class="powered-by">Powered By</div>{f'<img class="logo-tss" src="{tss_logo_uri}"/>' if tss_logo_uri else ''}</div>
   </div>
@@ -3112,7 +3111,7 @@ def format_lookup_phone(value) -> str:
 def get_detail_columns(detail_paths):
     con = get_conn()
     paths_sql = "[" + ", ".join(sql_string_literal(p) for p in detail_paths) + "]"
-    df = con.execute(f"DESCRIBE SELECT * FROM read_parquet({paths_sql})").df()
+    df = con.execute(f"DESCRIBE SELECT * FROM read_parquet({paths_sql}, union_by_name=True)").df()
     return df["column_name"].tolist()
 
 
@@ -3123,11 +3122,11 @@ def _detail_col_expr(columns, candidates, fallback="''"):
     return f"coalesce(cast(src.{quote_ident(col)} as varchar), '')", col
 
 
-def search_voters_for_lookup(active_filters, search_text: str, limit: int = 50, use_filtered_universe: bool = False) -> pd.DataFrame:
+def search_voters_for_lookup(active_filters, search_text: str, limit: int = 50, use_current_filters: bool = False) -> pd.DataFrame:
     detail_paths, _ = ensure_detail_shards()
     detail_columns = get_detail_columns(detail_paths)
-    lookup_filters = active_filters if use_filtered_universe else {}
-    base_sql, base_params = build_detail_export_sql(detail_paths, lookup_filters)
+    base_filters = active_filters if use_current_filters else {}
+    base_sql, base_params = build_detail_export_sql(detail_paths, base_filters)
 
     first_expr, first_col = _detail_col_expr(detail_columns, ["FirstName", "First Name"])
     middle_expr, middle_col = _detail_col_expr(detail_columns, ["MiddleName", "Middle Name"])
@@ -3258,75 +3257,28 @@ def render_lookup_field_block(title: str, rows: list[tuple[str, str]]):
         st.dataframe(pd.DataFrame(clean_rows), use_container_width=True, hide_index=True)
 
 
-def render_voter_lookup_tab(active_filters, columns):
+def render_voter_lookup_results_panel():
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="small-header">Voter Lookup</div>', unsafe_allow_html=True)
-    st.caption("Search the full statewide active-voter set by name, address, PA ID, phone, or email. Use the checkbox below only if you want lookup limited to the current filtered universe.")
 
-    use_filtered_universe = st.checkbox(
-        "Limit lookup to current filtered universe",
-        value=st.session_state.get("lookup_use_filtered_universe", False),
-        key="lookup_use_filtered_universe",
-    )
-
-    search_cols = st.columns([2.3, 0.9, 0.9], gap="medium")
-    with search_cols[0]:
-        lookup_query = st.text_input(
-            "Search voters",
-            value=st.session_state.get("lookup_query", ""),
-            placeholder="Example: Jane Smith, 123 Main, PA ID, phone, or email",
-            key="lookup_query_input",
-        )
-    with search_cols[1]:
-        result_limit = st.selectbox("Max Results", [10, 25, 50, 100], index=1, key="lookup_result_limit")
-    with search_cols[2]:
-        st.markdown("")
-        search_clicked = st.button("Search", use_container_width=True, type="primary", key="lookup_search_button")
-
-    if st.button("Clear Lookup", use_container_width=False, key="lookup_clear_button"):
-        st.session_state["lookup_query"] = ""
-        st.session_state["lookup_query_input"] = ""
-        st.session_state["lookup_results_records"] = []
-        st.session_state["lookup_selected_key"] = ""
-        st.rerun()
-
-    should_search = search_clicked or (
-        lookup_query
-        and (
-            lookup_query != st.session_state.get("lookup_last_query", "")
-            or bool(use_filtered_universe) != bool(st.session_state.get("lookup_last_scope_filtered", False))
-        )
-        and len(lookup_query.strip()) >= 2
-    )
-
-    if should_search:
-        with st.spinner("Searching voter detail shards..."):
-            results_df = search_voters_for_lookup(
-                active_filters,
-                lookup_query.strip(),
-                limit=int(result_limit),
-                use_filtered_universe=use_filtered_universe,
-            )
-            st.session_state["lookup_query"] = lookup_query.strip()
-            st.session_state["lookup_last_query"] = lookup_query.strip()
-            st.session_state["lookup_last_scope_filtered"] = bool(use_filtered_universe)
-            st.session_state["lookup_results_records"] = results_df.to_dict("records")
-            st.session_state["lookup_selected_key"] = results_df.iloc[0]["_LookupRowKey"] if not results_df.empty else ""
-
+    lookup_query = st.session_state.get("lookup_query", "")
     results_df = pd.DataFrame(st.session_state.get("lookup_results_records", []))
+    search_scope = st.session_state.get("lookup_use_current_filters", False)
+
+    scope_text = "current filtered universe" if search_scope else "full statewide active voter file"
+    st.caption(f"Showing lookup results from the {scope_text}.")
 
     if not lookup_query.strip():
-        st.info("Type a name, address, PA ID, phone number, or email to find a voter.")
+        st.info("Open the Voter Lookup menu on the left, enter a search, and click Search.")
         st.markdown('</div>', unsafe_allow_html=True)
         return
 
     if results_df.empty:
-        st.warning("No voters matched that search in the selected lookup scope.")
+        st.warning("No voters matched that search.")
         st.markdown('</div>', unsafe_allow_html=True)
         return
 
-    scope_label = "current filtered universe" if use_filtered_universe else "statewide active-voter set"
-    st.caption(f"{len(results_df):,} result(s) loaded from the {scope_label}")
+    st.caption(f"{len(results_df):,} result(s) loaded for: {lookup_query}")
     left_col, right_col = st.columns([1.1, 1.9], gap="medium")
 
     with left_col:
@@ -3398,6 +3350,56 @@ def render_voter_lookup_tab(active_filters, columns):
 
     st.markdown('</div>', unsafe_allow_html=True)
 
+
+def render_voter_lookup_sidebar(active_filters):
+    lookup_query = st.text_input(
+        "Search voters",
+        value=st.session_state.get("lookup_query", ""),
+        placeholder="Jane Smith, 123 Main, PA ID, phone, or email",
+        key="lookup_query_input",
+    )
+    result_limit = st.selectbox("Max Results", [10, 25, 50, 100], index=1, key="lookup_result_limit")
+    use_current_filters = st.checkbox(
+        "Limit lookup to current universe",
+        value=st.session_state.get("lookup_use_current_filters", False),
+        help="Leave this off for normal statewide voter lookup. Turn it on only when you want search limited to the current filter selections.",
+        key="lookup_use_current_filters_checkbox",
+    )
+
+    button_cols = st.columns(2, gap="small")
+    search_clicked = button_cols[0].button("Search", use_container_width=True, type="primary", key="lookup_search_button")
+    clear_clicked = button_cols[1].button("Clear", use_container_width=True, key="lookup_clear_button")
+
+    if clear_clicked:
+        st.session_state["lookup_query"] = ""
+        st.session_state["lookup_query_input"] = ""
+        st.session_state["lookup_last_query"] = ""
+        st.session_state["lookup_results_records"] = []
+        st.session_state["lookup_selected_key"] = ""
+        st.session_state["lookup_show_panel"] = False
+        st.session_state["lookup_use_current_filters"] = use_current_filters
+        st.rerun()
+
+    if search_clicked:
+        cleaned_query = lookup_query.strip()
+        st.session_state["lookup_query"] = cleaned_query
+        st.session_state["lookup_use_current_filters"] = use_current_filters
+        if len(cleaned_query) < 2:
+            st.warning("Enter at least 2 characters to search.")
+        else:
+            with st.spinner("Searching voter records..."):
+                results_df = search_voters_for_lookup(
+                    active_filters,
+                    cleaned_query,
+                    limit=int(result_limit),
+                    use_current_filters=bool(use_current_filters),
+                )
+            st.session_state["lookup_last_query"] = cleaned_query
+            st.session_state["lookup_results_records"] = results_df.to_dict("records")
+            st.session_state["lookup_selected_key"] = results_df.iloc[0]["_LookupRowKey"] if not results_df.empty else ""
+            st.session_state["lookup_show_panel"] = True
+            st.rerun()
+
 if "data_loaded" not in st.session_state:
     st.session_state.data_loaded = False
 if "filters_applied" not in st.session_state:
@@ -3420,9 +3422,7 @@ if "walk_results_filters" not in st.session_state:
     st.session_state.walk_results_filters = {}
 
 with st.sidebar:
-    st.header("Filters")
-    st.markdown('<div class="sidebar-note">This version uses public HTTPS downloads from Cloudflare R2 instead of boto3. Make sure your R2 bucket is Public Read enabled.</div>', unsafe_allow_html=True)
-
+    st.header("Candidate Connect")
 
     if not st.session_state.data_loaded:
         if st.button("Load Voter Data", use_container_width=True, type="primary"):
@@ -3433,241 +3433,249 @@ with st.sidebar:
                 st.session_state.data_loaded = True
                 st.session_state.filters_applied = False
             st.rerun()
-    else:
-        st.success("R2 index shards loaded")
 
-        cols = st.session_state.columns
-        opts = st.session_state.options
+    with st.expander("Create Universe", expanded=False):
+        if not st.session_state.data_loaded:
+            st.caption("Load voter data first to use filters, quick campaign lists, and saved universes.")
+        else:
+            cols = st.session_state.columns
+            opts = st.session_state.options
 
-        with st.form("filter_form", clear_on_submit=False):
-            with st.expander("Geography", expanded=False):
-                geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in cols]
-                geo_selections = {}
-                for col in geo_cols:
-                    geo_selections[col] = st.multiselect(col, opts.get(col, []), default=st.session_state.active_filters.get(col, []))
+            with st.form("filter_form", clear_on_submit=False):
+                with st.expander("Geography", expanded=False):
+                    geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in cols]
+                    geo_selections = {}
+                    for col in geo_cols:
+                        geo_selections[col] = st.multiselect(col, opts.get(col, []), default=st.session_state.active_filters.get(col, []))
 
-            with st.expander("Voter Details", expanded=False):
-                party_pick = st.multiselect("Party", opts.get("party_vals", []), default=st.session_state.active_filters.get("party_pick", []))
-                hh_party_pick = st.multiselect("Household Party", opts.get("hh_party_vals", []), default=st.session_state.active_filters.get("hh_party_pick", [])) if "HH-Party" in cols else []
-                calc_party_pick = st.multiselect("Calculated Party", opts.get("calc_party_vals", []), default=st.session_state.active_filters.get("calc_party_pick", [])) if "CalculatedParty" in cols else []
-                gender_pick = st.multiselect("Gender", opts.get("gender_vals", []), default=st.session_state.active_filters.get("gender_pick", []))
-                age_range_pick = st.multiselect("Age Range", opts.get("age_range_vals", []), default=st.session_state.active_filters.get("age_range_pick", []))
-                age_slider = None
-                if opts.get("age_min") is not None and opts.get("age_max") is not None:
-                    age_slider = st.slider("Age", opts["age_min"], opts["age_max"], st.session_state.active_filters.get("age_slider", (opts["age_min"], opts["age_max"])))
+                with st.expander("Voter Details", expanded=False):
+                    party_pick = st.multiselect("Party", opts.get("party_vals", []), default=st.session_state.active_filters.get("party_pick", []))
+                    hh_party_pick = st.multiselect("Household Party", opts.get("hh_party_vals", []), default=st.session_state.active_filters.get("hh_party_pick", [])) if "HH-Party" in cols else []
+                    calc_party_pick = st.multiselect("Calculated Party", opts.get("calc_party_vals", []), default=st.session_state.active_filters.get("calc_party_pick", [])) if "CalculatedParty" in cols else []
+                    gender_pick = st.multiselect("Gender", opts.get("gender_vals", []), default=st.session_state.active_filters.get("gender_pick", []))
+                    age_range_pick = st.multiselect("Age Range", opts.get("age_range_vals", []), default=st.session_state.active_filters.get("age_range_pick", []))
+                    age_slider = None
+                    if opts.get("age_min") is not None and opts.get("age_max") is not None:
+                        age_slider = st.slider("Age", opts["age_min"], opts["age_max"], st.session_state.active_filters.get("age_slider", (opts["age_min"], opts["age_max"])))
 
-            with st.expander("Vote History", expanded=False):
-                vh_type_options = ["All", "General", "Primary"]
-                current_vh_type = st.session_state.active_filters.get("vote_history_type", "All")
-                if current_vh_type not in vh_type_options:
-                    current_vh_type = "All"
-                vote_history_type = st.selectbox(
-                    "Vote History Type",
-                    vh_type_options,
-                    index=vh_type_options.index(current_vh_type),
-                    help="All uses V4A, General uses V4G, and Primary uses V4P.",
-                )
-                current_range = st.session_state.active_filters.get("vote_history_range", (0, 4))
-                if not isinstance(current_range, (list, tuple)) or len(current_range) != 2:
-                    current_range = (0, 4)
-                vote_history_range = st.slider(
-                    "Vote History Range",
-                    min_value=0,
-                    max_value=4,
-                    value=(int(current_range[0]), int(current_range[1])),
-                    help="0-4 elections in the selected vote history field.",
-                )
-
-                mib_applied_pick = st.multiselect("Mail Ballot Application Status", opts.get("mib_applied_vals", []), default=st.session_state.active_filters.get("mib_applied_pick", []))
-                mib_ballot_pick = st.multiselect("Mail Ballot Vote Status", opts.get("mib_ballot_vals", []), default=st.session_state.active_filters.get("mib_ballot_pick", []))
-                mb_perm_pick = st.multiselect("MB Perm", opts.get("mb_perm_vals", []), default=st.session_state.active_filters.get("mb_perm_pick", []))
-
-                mb_score_slider = None
-                if opts.get("mb_score_min") is not None and opts.get("mb_score_max") is not None:
-                    lo = float(opts["mb_score_min"])
-                    hi = float(opts["mb_score_max"])
-                    default_score = st.session_state.active_filters.get("mb_score_slider", (lo, hi))
-                    if not isinstance(default_score, (list, tuple)) or len(default_score) != 2:
-                        default_score = (lo, hi)
-                    mb_score_slider = st.slider(
-                        "MB Probability Score",
-                        min_value=lo,
-                        max_value=hi,
-                        value=(float(default_score[0]), float(default_score[1])),
+                with st.expander("Vote History", expanded=False):
+                    vh_type_options = ["All", "General", "Primary"]
+                    current_vh_type = st.session_state.active_filters.get("vote_history_type", "All")
+                    if current_vh_type not in vh_type_options:
+                        current_vh_type = "All"
+                    vote_history_type = st.selectbox(
+                        "Vote History Type",
+                        vh_type_options,
+                        index=vh_type_options.index(current_vh_type),
+                        help="All uses V4A, General uses V4G, and Primary uses V4P.",
+                    )
+                    current_range = st.session_state.active_filters.get("vote_history_range", (0, 4))
+                    if not isinstance(current_range, (list, tuple)) or len(current_range) != 2:
+                        current_range = (0, 4)
+                    vote_history_range = st.slider(
+                        "Vote History Range",
+                        min_value=0,
+                        max_value=4,
+                        value=(int(current_range[0]), int(current_range[1])),
+                        help="0-4 elections in the selected vote history field.",
                     )
 
-                new_reg_months = st.slider(
-                    "Newly Registered (within last N months; 0 = all)",
-                    min_value=0,
-                    max_value=24,
-                    value=st.session_state.active_filters.get("new_reg_months", 0),
-                    step=1,
+                    mib_applied_pick = st.multiselect("Mail Ballot Application Status", opts.get("mib_applied_vals", []), default=st.session_state.active_filters.get("mib_applied_pick", []))
+                    mib_ballot_pick = st.multiselect("Mail Ballot Vote Status", opts.get("mib_ballot_vals", []), default=st.session_state.active_filters.get("mib_ballot_pick", []))
+                    mb_perm_pick = st.multiselect("MB Perm", opts.get("mb_perm_vals", []), default=st.session_state.active_filters.get("mb_perm_pick", []))
+
+                    mb_score_slider = None
+                    if opts.get("mb_score_min") is not None and opts.get("mb_score_max") is not None:
+                        lo = float(opts["mb_score_min"])
+                        hi = float(opts["mb_score_max"])
+                        default_score = st.session_state.active_filters.get("mb_score_slider", (lo, hi))
+                        if not isinstance(default_score, (list, tuple)) or len(default_score) != 2:
+                            default_score = (lo, hi)
+                        mb_score_slider = st.slider(
+                            "MB Probability Score",
+                            min_value=lo,
+                            max_value=hi,
+                            value=(float(default_score[0]), float(default_score[1])),
+                        )
+
+                    new_reg_months = st.slider(
+                        "Newly Registered (within last N months; 0 = all)",
+                        min_value=0,
+                        max_value=24,
+                        value=st.session_state.active_filters.get("new_reg_months", 0),
+                        step=1,
+                    )
+
+                with st.expander("Contact Filters", expanded=False):
+                    email_opts = ["All", "Has Email", "No Email"]
+                    landline_opts = ["All", "Has Landline", "No Landline"]
+                    mobile_opts = ["All", "Has Mobile", "No Mobile"]
+                    has_email = st.selectbox("Email", email_opts, index=email_opts.index(st.session_state.active_filters.get("has_email", "All")))
+                    has_landline = st.selectbox("Landline", landline_opts, index=landline_opts.index(st.session_state.active_filters.get("has_landline", "All")))
+                    has_mobile = st.selectbox("Mobile", mobile_opts, index=mobile_opts.index(st.session_state.active_filters.get("has_mobile", "All")))
+
+                with st.expander("Smart Follow-Up", expanded=False):
+                    contact_status_opts = ["All", "Not Contacted", "Contacted"]
+                    global_yes_no_opts = ["All", "Yes", "No"]
+                    support_level_opts = get_global_support_level_options()
+
+                    contact_status = st.selectbox(
+                        "Contact Status",
+                        contact_status_opts,
+                        index=contact_status_opts.index(st.session_state.active_filters.get("contact_status", "All")),
+                        help="Uses uploaded candidate Street List and Walk Sheet results.",
+                    )
+                    global_nh = st.selectbox(
+                        "Not Home",
+                        global_yes_no_opts,
+                        index=global_yes_no_opts.index(st.session_state.active_filters.get("global_nh", "All")),
+                    )
+                    global_follow_up = st.selectbox(
+                        "Follow-Up",
+                        global_yes_no_opts,
+                        index=global_yes_no_opts.index(st.session_state.active_filters.get("global_follow_up", "All")),
+                    )
+                    current_support = st.session_state.active_filters.get("global_support_level", "All")
+                    if current_support not in support_level_opts:
+                        current_support = "All"
+                    global_support_level = st.selectbox(
+                        "Support Level",
+                        support_level_opts,
+                        index=support_level_opts.index(current_support),
+                    )
+                    st.caption("These filters use uploaded Street List and Walk Sheet tracking data across exports, reports, and turf packets.")
+
+                cols2 = st.columns(2)
+                apply_filters = cols2[0].form_submit_button("Apply Filters", use_container_width=True, type="primary")
+                clear_filters = cols2[1].form_submit_button("Clear Filters", use_container_width=True)
+
+            if clear_filters:
+                st.session_state.active_filters = {}
+                st.session_state.filters_applied = False
+                st.rerun()
+
+            if apply_filters:
+                st.session_state.active_filters = {
+                    **geo_selections,
+                    "party_pick": party_pick,
+                    "hh_party_pick": hh_party_pick,
+                    "calc_party_pick": calc_party_pick,
+                    "gender_pick": gender_pick,
+                    "age_range_pick": age_range_pick,
+                    "age_slider": age_slider,
+                    "vote_history_type": vote_history_type,
+                    "vote_history_range": vote_history_range,
+                    "mib_applied_pick": mib_applied_pick,
+                    "mib_ballot_pick": mib_ballot_pick,
+                    "mb_perm_pick": mb_perm_pick,
+                    "mb_score_slider": mb_score_slider,
+                    "new_reg_months": new_reg_months,
+                    "has_email": has_email,
+                    "has_landline": has_landline,
+                    "has_mobile": has_mobile,
+                    "contact_status": contact_status,
+                    "global_nh": global_nh,
+                    "global_follow_up": global_follow_up,
+                    "global_support_level": global_support_level,
+                }
+                st.session_state.filters_applied = True
+                st.session_state["lookup_show_panel"] = False
+                st.rerun()
+
+            divider()
+            with st.expander("Quick Campaign Lists", expanded=False):
+                st.caption("These buttons keep your existing geography and voter filters, but quickly set the Smart Follow-Up filters.")
+                qs_row1 = st.columns(2, gap="small")
+                with qs_row1[0]:
+                    if st.button("Re-Knock List", use_container_width=True, key="qs_reknock"):
+                        apply_followup_preset("Re-Knock List")
+                with qs_row1[1]:
+                    if st.button("Follow-Up List", use_container_width=True, key="qs_followup"):
+                        apply_followup_preset("Follow-Up List")
+
+                qs_row2 = st.columns(2, gap="small")
+                with qs_row2[0]:
+                    if st.button("GOTV Supporters", use_container_width=True, key="qs_gotv"):
+                        apply_followup_preset("GOTV Supporters")
+                with qs_row2[1]:
+                    if st.button("Undecided Persuasion", use_container_width=True, key="qs_undecided"):
+                        apply_followup_preset("Undecided Persuasion")
+
+                qs_row3 = st.columns(2, gap="small")
+                with qs_row3[0]:
+                    if st.button("Yard Sign Follow-Up", use_container_width=True, key="qs_yardsign"):
+                        apply_followup_preset("Yard Sign Follow-Up")
+                with qs_row3[1]:
+                    if st.button("Clear Quick Select", use_container_width=True, key="qs_clear"):
+                        apply_followup_preset("Clear")
+
+            with st.expander("Saved Universes", expanded=False):
+                store_label = get_saved_universe_store_label()
+                if store_label == "Cloudflare R2":
+                    st.caption("Saved universes are stored in persistent Cloudflare R2 storage.")
+                else:
+                    st.caption("Saved universes are using local fallback storage. Add R2 write secrets to keep them across restarts.")
+
+                saved_universes = load_saved_universes()
+                st.session_state["saved_universes"] = saved_universes
+                universe_names = list(saved_universes.keys())
+
+                if universe_names:
+                    selected_sidebar_universe = st.selectbox(
+                        "Saved Universes",
+                        universe_names,
+                        key="sidebar_saved_universe_name",
+                    )
+                    universe_info = saved_universes[selected_sidebar_universe]
+                    st.caption(
+                        f"Saved: {universe_info.get('saved_at', '')} | Count: {int(universe_info.get('count', 0)):,}"
+                    )
+                    st.caption(universe_info.get("summary", "No filters"))
+                    load_col, delete_col = st.columns(2, gap="small")
+                    with load_col:
+                        if st.button("Load Universe", use_container_width=True, key="load_sidebar_universe"):
+                            st.session_state.active_filters = universe_info.get("filters", {})
+                            st.session_state.filters_applied = False
+                            st.success(f"Loaded universe: {selected_sidebar_universe}")
+                            st.rerun()
+                    with delete_col:
+                        if st.button("Delete Universe", use_container_width=True, key="delete_sidebar_universe"):
+                            saved_universes.pop(selected_sidebar_universe, None)
+                            save_saved_universes(saved_universes)
+                            st.session_state["saved_universes"] = saved_universes
+                            st.success(f"Deleted universe: {selected_sidebar_universe}")
+                            st.rerun()
+                else:
+                    st.caption("No saved universes yet.")
+
+                save_name = st.text_input(
+                    "Save current filters as",
+                    key="save_universe_name_sidebar",
+                    placeholder="Example: GOTV Democrats Week 1",
                 )
-
-            with st.expander("Contact Filters", expanded=False):
-                email_opts = ["All", "Has Email", "No Email"]
-                landline_opts = ["All", "Has Landline", "No Landline"]
-                mobile_opts = ["All", "Has Mobile", "No Mobile"]
-                has_email = st.selectbox("Email", email_opts, index=email_opts.index(st.session_state.active_filters.get("has_email", "All")))
-                has_landline = st.selectbox("Landline", landline_opts, index=landline_opts.index(st.session_state.active_filters.get("has_landline", "All")))
-                has_mobile = st.selectbox("Mobile", mobile_opts, index=mobile_opts.index(st.session_state.active_filters.get("has_mobile", "All")))
-
-            with st.expander("Smart Follow-Up", expanded=False):
-                contact_status_opts = ["All", "Not Contacted", "Contacted"]
-                global_yes_no_opts = ["All", "Yes", "No"]
-                support_level_opts = get_global_support_level_options()
-
-                contact_status = st.selectbox(
-                    "Contact Status",
-                    contact_status_opts,
-                    index=contact_status_opts.index(st.session_state.active_filters.get("contact_status", "All")),
-                    help="Uses uploaded candidate Street List and Walk Sheet results.",
-                )
-                global_nh = st.selectbox(
-                    "Not Home",
-                    global_yes_no_opts,
-                    index=global_yes_no_opts.index(st.session_state.active_filters.get("global_nh", "All")),
-                )
-                global_follow_up = st.selectbox(
-                    "Follow-Up",
-                    global_yes_no_opts,
-                    index=global_yes_no_opts.index(st.session_state.active_filters.get("global_follow_up", "All")),
-                )
-                current_support = st.session_state.active_filters.get("global_support_level", "All")
-                if current_support not in support_level_opts:
-                    current_support = "All"
-                global_support_level = st.selectbox(
-                    "Support Level",
-                    support_level_opts,
-                    index=support_level_opts.index(current_support),
-                )
-                st.caption("These filters use uploaded Street List and Walk Sheet tracking data across exports, reports, and turf packets.")
-
-            st.caption("Counts stay at zero until you click Apply Filters.")
-            cols2 = st.columns(2)
-            apply_filters = cols2[0].form_submit_button("Apply Filters", use_container_width=True, type="primary")
-            clear_filters = cols2[1].form_submit_button("Clear Filters", use_container_width=True)
-
-        if clear_filters:
-            st.session_state.active_filters = {}
-            st.session_state.filters_applied = False
-            st.rerun()
-
-        if apply_filters:
-            st.session_state.active_filters = {
-                **geo_selections,
-                "party_pick": party_pick,
-                "hh_party_pick": hh_party_pick,
-                "calc_party_pick": calc_party_pick,
-                "gender_pick": gender_pick,
-                "age_range_pick": age_range_pick,
-                "age_slider": age_slider,
-                "vote_history_type": vote_history_type,
-                "vote_history_range": vote_history_range,
-                "mib_applied_pick": mib_applied_pick,
-                "mib_ballot_pick": mib_ballot_pick,
-                "mb_perm_pick": mb_perm_pick,
-                "mb_score_slider": mb_score_slider,
-                "new_reg_months": new_reg_months,
-                "has_email": has_email,
-                "has_landline": has_landline,
-                "has_mobile": has_mobile,
-                "contact_status": contact_status,
-                "global_nh": global_nh,
-                "global_follow_up": global_follow_up,
-                "global_support_level": global_support_level,
-            }
-            st.session_state.filters_applied = True
-            st.rerun()
-
-        divider()
-        with st.expander("⚡ Quick Select Campaign Lists", expanded=False):
-            st.caption("These buttons keep your existing geography and voter filters, but quickly set the Smart Follow-Up filters.")
-            qs_row1 = st.columns(2, gap="small")
-            with qs_row1[0]:
-                if st.button("Re-Knock List", use_container_width=True, key="qs_reknock"):
-                    apply_followup_preset("Re-Knock List")
-            with qs_row1[1]:
-                if st.button("Follow-Up List", use_container_width=True, key="qs_followup"):
-                    apply_followup_preset("Follow-Up List")
-
-            qs_row2 = st.columns(2, gap="small")
-            with qs_row2[0]:
-                if st.button("GOTV Supporters", use_container_width=True, key="qs_gotv"):
-                    apply_followup_preset("GOTV Supporters")
-            with qs_row2[1]:
-                if st.button("Undecided Persuasion", use_container_width=True, key="qs_undecided"):
-                    apply_followup_preset("Undecided Persuasion")
-
-            qs_row3 = st.columns(2, gap="small")
-            with qs_row3[0]:
-                if st.button("Yard Sign Follow-Up", use_container_width=True, key="qs_yardsign"):
-                    apply_followup_preset("Yard Sign Follow-Up")
-            with qs_row3[1]:
-                if st.button("Clear Quick Select", use_container_width=True, key="qs_clear"):
-                    apply_followup_preset("Clear")
-
-        with st.expander("💾 Saved Universes", expanded=False):
-            store_label = get_saved_universe_store_label()
-            if store_label == "Cloudflare R2":
-                st.caption("Saved universes are stored in persistent Cloudflare R2 storage.")
-            else:
-                st.caption("Saved universes are using local fallback storage. Add R2 write secrets to keep them across restarts.")
-
-            saved_universes = load_saved_universes()
-            st.session_state["saved_universes"] = saved_universes
-            universe_names = list(saved_universes.keys())
-
-            if universe_names:
-                selected_sidebar_universe = st.selectbox(
-                    "Saved Universes",
-                    universe_names,
-                    key="sidebar_saved_universe_name",
-                )
-                universe_info = saved_universes[selected_sidebar_universe]
-                st.caption(
-                    f"Saved: {universe_info.get('saved_at', '')} | Count: {int(universe_info.get('count', 0)):,}"
-                )
-                st.caption(universe_info.get("summary", "No filters"))
-                load_col, delete_col = st.columns(2, gap="small")
-                with load_col:
-                    if st.button("Load Universe", use_container_width=True, key="load_sidebar_universe"):
-                        st.session_state.active_filters = universe_info.get("filters", {})
-                        st.session_state.filters_applied = False
-                        st.success(f"Loaded universe: {selected_sidebar_universe}")
-                        st.rerun()
-                with delete_col:
-                    if st.button("Delete Universe", use_container_width=True, key="delete_sidebar_universe"):
-                        saved_universes.pop(selected_sidebar_universe, None)
+                if st.button("Save Current Universe", use_container_width=True, key="save_sidebar_universe"):
+                    universe_name = save_name.strip()
+                    if universe_name:
+                        current_filters = st.session_state.get("active_filters", {})
+                        saved_universes = load_saved_universes()
+                        saved_universes[universe_name] = {
+                            "filters": current_filters,
+                            "saved_at": datetime.now().strftime("%Y-%m-%d %I:%M %p"),
+                            "count": int(query_metrics(current_filters, st.session_state.get("columns", [])).get("voters", 0)),
+                            "summary": summarize_universe_filters(current_filters),
+                        }
                         save_saved_universes(saved_universes)
                         st.session_state["saved_universes"] = saved_universes
-                        st.success(f"Deleted universe: {selected_sidebar_universe}")
+                        st.success(f"Saved universe: {universe_name}")
                         st.rerun()
-            else:
-                st.caption("No saved universes yet.")
+                    else:
+                        st.warning("Enter a universe name first.")
 
-            save_name = st.text_input(
-                "Save current filters as",
-                key="save_universe_name_sidebar",
-                placeholder="Example: GOTV Democrats Week 1",
-            )
-            if st.button("Save Current Universe", use_container_width=True, key="save_sidebar_universe"):
-                universe_name = save_name.strip()
-                if universe_name:
-                    current_filters = st.session_state.get("active_filters", {})
-                    saved_universes = load_saved_universes()
-                    saved_universes[universe_name] = {
-                        "filters": current_filters,
-                        "saved_at": datetime.now().strftime("%Y-%m-%d %I:%M %p"),
-                        "count": int(query_metrics(current_filters, st.session_state.get("columns", [])).get("voters", 0)),
-                        "summary": summarize_universe_filters(current_filters),
-                    }
-                    save_saved_universes(saved_universes)
-                    st.session_state["saved_universes"] = saved_universes
-                    st.success(f"Saved universe: {universe_name}")
-                    st.rerun()
-                else:
-                    st.warning("Enter a universe name first.")
+    with st.expander("Voter Lookup", expanded=False):
+        if not st.session_state.data_loaded:
+            st.caption("Load voter data first, then search the statewide file or your current universe.")
+        else:
+            render_voter_lookup_sidebar(st.session_state.get("active_filters", {}))
 
 
 if not st.session_state.data_loaded:
@@ -3680,14 +3688,18 @@ if not st.session_state.data_loaded:
     st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to load</div><div class="tiny-muted">Click <strong>Load Voter Data</strong> in the sidebar to open the R2 index shards with DuckDB.</div></div>', unsafe_allow_html=True)
     st.stop()
 
-if not st.session_state.filters_applied:
+if not st.session_state.filters_applied and not st.session_state.get("lookup_show_panel", False):
     zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Mobiles", "0"), ("Unique Precincts", "0")]
     metric_cols = st.columns(5, gap="small")
     for col, (label, value) in zip(metric_cols, zeros):
         with col:
             st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
     divider()
-    st.markdown('<div class="section-card empty-shell"><div class="small-header">Filters are loaded</div><div class="tiny-muted">Choose your filters in the sidebar and click <strong>Apply Filters</strong> to run counts and charts.</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to work</div><div class="tiny-muted">Open <strong>Create Universe</strong> to build a filtered list, or open <strong>Voter Lookup</strong> to search the statewide voter file.</div></div>', unsafe_allow_html=True)
+    st.stop()
+
+if st.session_state.get("lookup_show_panel", False) and not st.session_state.filters_applied:
+    render_voter_lookup_results_panel()
     st.stop()
 
 active = st.session_state.active_filters
@@ -3740,7 +3752,10 @@ divider()
 if large_filter_mode:
     st.warning("Large statewide filter detected. To keep the app stable, some detail-heavy tracking calculations are temporarily simplified until you narrow the universe.")
 
-dashboard_tabs = st.tabs(["Overview", "Contact Tracking", "Output Center", "Voter Lookup"])
+if st.session_state.get("lookup_show_panel", False):
+    render_voter_lookup_results_panel()
+
+dashboard_tabs = st.tabs(["Overview", "Contact Tracking", "Output Center"])
 
 with dashboard_tabs[0]:
     if large_filter_mode:
@@ -4288,9 +4303,3 @@ with dashboard_tabs[2]:
     
     
         st.markdown('</div>', unsafe_allow_html=True)
-
-
-with dashboard_tabs[3]:
-    if large_filter_mode:
-        st.info("Voter Lookup is available here even in large-universe mode, but it searches inside the current filtered universe. Narrow geography if you want a smaller result set.")
-    render_voter_lookup_tab(active, columns)
