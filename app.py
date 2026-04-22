@@ -3555,22 +3555,47 @@ def build_voter_report_pdf_bytes(row) -> bytes:
     width, height = landscape(letter)
     margin_x = 24
 
+    # Branding header
+    header_top = height - 18
+    if CC_LOGO.exists():
+        try:
+            c.drawImage(ImageReader(str(CC_LOGO)), margin_x, header_top - 42, width=118, height=40, preserveAspectRatio=True, mask='auto')
+        except Exception:
+            pass
+    c.setFont("Helvetica-Bold", 17)
+    c.setFillColor(colors.HexColor("#173B73"))
+    c.drawString(margin_x + 128, header_top - 12, "Candidate Connect")
+    c.setFont("Helvetica", 8)
+    c.setFillColor(colors.HexColor("#4B5563"))
+    c.drawString(margin_x + 128, header_top - 25, "Voter Lookup Report")
+    c.drawString(margin_x + 128, header_top - 36, datetime.now().strftime("Generated %m/%d/%Y %I:%M %p"))
+    c.setFont("Helvetica-Bold", 8)
+    c.drawRightString(width - 92, header_top - 10, "Powered By")
+    if TSS_LOGO.exists():
+        try:
+            c.drawImage(ImageReader(str(TSS_LOGO)), width - 86, header_top - 34, width=62, height=20, preserveAspectRatio=True, mask='auto')
+        except Exception:
+            pass
+    c.setStrokeColor(colors.HexColor("#D7DCE3"))
+    c.line(margin_x, header_top - 50, width - margin_x, header_top - 50)
+
     voter_name = build_lookup_full_name(row) or "Unnamed voter"
     c.setFont("Helvetica-Bold", 18)
     c.setFillColor(colors.HexColor("#8A1C1C"))
-    c.drawString(margin_x, height - 28, voter_name.upper())
+    c.drawString(margin_x, height - 82, voter_name.upper())
     c.setFillColor(colors.black)
 
-    y = height - 56
+    y = height - 112
     c.setFont("Helvetica-Bold", 10)
     c.drawString(margin_x, y, "Address")
     c.setFont("Helvetica", 10)
-    for line in [ln for ln in build_lookup_address(row).split("\n") if normalize_export_text(ln)]:
+    address_lines = [ln for ln in build_lookup_address(row).split("\n") if normalize_export_text(ln)]
+    for line in address_lines:
         y -= 14
         c.drawString(margin_x, y, line)
 
     left_x, mid_x, right_x = margin_x, 260, 520
-    top_y = height - 90
+    top_y = min(y - 12, height - 150)
 
     c.setFont("Helvetica-Bold", 10)
     c.drawString(left_x, top_y, "Districts + Geography")
@@ -3624,7 +3649,7 @@ def build_voter_report_pdf_bytes(row) -> bytes:
         c.setFont("Helvetica-Bold", 9)
         c.drawString(right_x, yy, f"{label}:")
         c.setFont("Helvetica", 9)
-        c.drawString(right_x + 62, yy, (normalize_export_text(value) or "—")[:28])
+        c.drawString(right_x + 62, yy, (normalize_export_text(value) or "—")[:30])
         yy -= 14
 
     table_y = 360
