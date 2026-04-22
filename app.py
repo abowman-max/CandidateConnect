@@ -346,6 +346,18 @@ def build_view_sql(columns, local_paths):
     else:
         exprs.append("'' as _VoteHistory")
 
+    vote_hist_general_col = first_existing(columns, ["V4G"])
+    vote_hist_primary_col = first_existing(columns, ["V4P"])
+    if vote_hist_general_col:
+        exprs.append(f"upper(trim(coalesce(cast({q(vote_hist_general_col)} as varchar), ''))) as _VoteHistoryGeneral")
+    else:
+        exprs.append("'' as _VoteHistoryGeneral")
+
+    if vote_hist_primary_col:
+        exprs.append(f"upper(trim(coalesce(cast({q(vote_hist_primary_col)} as varchar), ''))) as _VoteHistoryPrimary")
+    else:
+        exprs.append("'' as _VoteHistoryPrimary")
+
     if mib_applied_col:
         exprs.append(f"upper(trim(coalesce(cast({q(mib_applied_col)} as varchar), ''))) as _MIBApplied")
     else:
@@ -429,10 +441,19 @@ def current_filter_clause(active, columns):
     if active.get("age_slider") is not None:
         where.append("_AgeNum >= ? AND _AgeNum <= ?")
         params.extend([active["age_slider"][0], active["age_slider"][1]])
-    if active.get("vote_history_pick"):
-        picked = active["vote_history_pick"]
-        where.append(f"_VoteHistory IN ({sql_literal_list(picked)})")
-        params.extend(picked)
+    vote_history_type = active.get("vote_history_type", "All")
+    vote_history_range = active.get("vote_history_range")
+    if vote_history_range is not None:
+        low, high = vote_history_range
+        if str(vote_history_type) == "General":
+            where.append("coalesce(try_cast(regexp_extract(_VoteHistoryGeneral, '(\\d+)', 1) as integer), 0) >= ? AND coalesce(try_cast(regexp_extract(_VoteHistoryGeneral, '(\\d+)', 1) as integer), 0) <= ?")
+            params.extend([int(low), int(high)])
+        elif str(vote_history_type) == "Primary":
+            where.append("coalesce(try_cast(regexp_extract(_VoteHistoryPrimary, '(\\d+)', 1) as integer), 0) >= ? AND coalesce(try_cast(regexp_extract(_VoteHistoryPrimary, '(\\d+)', 1) as integer), 0) <= ?")
+            params.extend([int(low), int(high)])
+        else:
+            where.append("coalesce(try_cast(regexp_extract(_VoteHistory, '(\\d+)', 1) as integer), 0) >= ? AND coalesce(try_cast(regexp_extract(_VoteHistory, '(\\d+)', 1) as integer), 0) <= ?")
+            params.extend([int(low), int(high)])
     if active.get("mib_applied_pick"):
         picked = active["mib_applied_pick"]
         where.append(f"_MIBApplied IN ({sql_literal_list(picked)})")
@@ -497,7 +518,6 @@ def get_basic_options(columns):
     options["age_range_vals"] = get_distinct_options("_AgeRange", "_AgeRange")
     options["hh_party_vals"] = get_distinct_options("HH-Party") if "HH-Party" in columns else []
     options["calc_party_vals"] = get_distinct_options("CalculatedParty") if "CalculatedParty" in columns else []
-    options["vote_history_vals"] = ordered_vote_history_values(get_distinct_options("_VoteHistory", "_VoteHistory")) if "V4A" in columns else []
     options["mib_applied_vals"] = get_distinct_options("_MIBApplied", "_MIBApplied")
     options["mib_ballot_vals"] = get_distinct_options("_MIBBallot", "_MIBBallot")
     options["mb_perm_vals"] = get_distinct_options("_MBPerm", "_MBPerm")
@@ -1056,6 +1076,18 @@ def build_detail_export_sql(detail_paths, active_filters):
     else:
         exprs.append("'' as _VoteHistory")
 
+    vote_hist_general_col = first_existing(columns, ["V4G"])
+    vote_hist_primary_col = first_existing(columns, ["V4P"])
+    if vote_hist_general_col:
+        exprs.append(f"upper(trim(coalesce(cast({q(vote_hist_general_col)} as varchar), ''))) as _VoteHistoryGeneral")
+    else:
+        exprs.append("'' as _VoteHistoryGeneral")
+
+    if vote_hist_primary_col:
+        exprs.append(f"upper(trim(coalesce(cast({q(vote_hist_primary_col)} as varchar), ''))) as _VoteHistoryPrimary")
+    else:
+        exprs.append("'' as _VoteHistoryPrimary")
+
     if mib_applied_col:
         exprs.append(f"upper(trim(coalesce(cast({q(mib_applied_col)} as varchar), ''))) as _MIBApplied")
     else:
@@ -1497,9 +1529,10 @@ def build_filter_summary_lines(active_filters: dict) -> list[str]:
         expanded = ", ".join(expand_party_label(p) for p in parties)
         lines.append(f"Party: {expanded}")
 
-    vote_hist = active_filters.get("vote_history_pick", []) or []
-    if vote_hist:
-        lines.append(f"Vote History: {summarize_vote_history(vote_hist)}")
+    vote_history_type = active_filters.get("vote_history_type", "All")
+    vote_history_range = active_filters.get("vote_history_range")
+    if vote_history_range is not None:
+        lines.append(f"Vote History ({vote_history_type}): {int(vote_history_range[0])}-{int(vote_history_range[1])} of the last 4")
 
     mib_app = active_filters.get("mib_applied_pick", []) or []
     if mib_app:
@@ -3120,30 +3153,26 @@ with st.sidebar:
                     age_slider = st.slider("Age", opts["age_min"], opts["age_max"], st.session_state.active_filters.get("age_slider", (opts["age_min"], opts["age_max"])))
 
             with st.expander("Vote History", expanded=False):
-                vote_history_vals = opts.get("vote_history_vals", [])
-                vote_history_pick = []
-                if vote_history_vals:
-                    max_index = len(vote_history_vals) - 1
-                    default_vote_idx = st.session_state.active_filters.get("vote_history_index_range", (0, max_index))
-                    if not isinstance(default_vote_idx, (list, tuple)) or len(default_vote_idx) != 2:
-                        default_vote_idx = (0, max_index)
-                    default_vote_idx = (
-                        max(0, min(int(default_vote_idx[0]), max_index)),
-                        max(0, min(int(default_vote_idx[1]), max_index)),
-                    )
-                    vote_idx_range = st.slider(
-                        "Vote History Range (V4A)",
-                        min_value=0,
-                        max_value=max_index,
-                        value=default_vote_idx,
-                        format="%d",
-                    )
-                    vote_history_pick = vote_history_vals[vote_idx_range[0]: vote_idx_range[1] + 1]
-                    if vote_history_pick:
-                        st.caption(f"Selected vote history: {vote_history_pick[0]} to {vote_history_pick[-1]}")
-                else:
-                    vote_idx_range = (0, 0)
-                    st.caption("No vote history values found.")
+                vh_type_options = ["All", "General", "Primary"]
+                current_vh_type = st.session_state.active_filters.get("vote_history_type", "All")
+                if current_vh_type not in vh_type_options:
+                    current_vh_type = "All"
+                vote_history_type = st.selectbox(
+                    "Vote History Type",
+                    vh_type_options,
+                    index=vh_type_options.index(current_vh_type),
+                    help="All uses V4A, General uses V4G, and Primary uses V4P.",
+                )
+                current_range = st.session_state.active_filters.get("vote_history_range", (0, 4))
+                if not isinstance(current_range, (list, tuple)) or len(current_range) != 2:
+                    current_range = (0, 4)
+                vote_history_range = st.slider(
+                    "Vote History Range",
+                    min_value=0,
+                    max_value=4,
+                    value=(int(current_range[0]), int(current_range[1])),
+                    help="Select a range from 0 to 4 based on the vote history type chosen above.",
+                )
 
                 mib_applied_pick = st.multiselect("Mail Ballot Application Status", opts.get("mib_applied_vals", []), default=st.session_state.active_filters.get("mib_applied_pick", []))
                 mib_ballot_pick = st.multiselect("Mail Ballot Vote Status", opts.get("mib_ballot_vals", []), default=st.session_state.active_filters.get("mib_ballot_pick", []))
@@ -3229,8 +3258,8 @@ with st.sidebar:
                 "gender_pick": gender_pick,
                 "age_range_pick": age_range_pick,
                 "age_slider": age_slider,
-                "vote_history_pick": vote_history_pick,
-                "vote_history_index_range": vote_idx_range,
+                "vote_history_type": vote_history_type,
+                "vote_history_range": vote_history_range,
                 "mib_applied_pick": mib_applied_pick,
                 "mib_ballot_pick": mib_ballot_pick,
                 "mb_perm_pick": mb_perm_pick,
