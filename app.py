@@ -446,13 +446,22 @@ def current_filter_clause(active, columns):
     if vote_history_range is not None:
         low, high = vote_history_range
         if str(vote_history_type) == "General":
-            where.append("coalesce(try_cast(regexp_extract(_VoteHistoryGeneral, '(\\d+)', 1) as integer), 0) >= ? AND coalesce(try_cast(regexp_extract(_VoteHistoryGeneral, '(\\d+)', 1) as integer), 0) <= ?")
+            if "V4G" in columns:
+                where.append("coalesce(try_cast(regexp_extract(cast(\"V4G\" as varchar), '(\\\\d+)', 1) as integer), 0) >= ? AND coalesce(try_cast(regexp_extract(cast(\"V4G\" as varchar), '(\\\\d+)', 1) as integer), 0) <= ?")
+            else:
+                where.append("coalesce(try_cast(regexp_extract(_VoteHistoryGeneral, '(\\d+)', 1) as integer), 0) >= ? AND coalesce(try_cast(regexp_extract(_VoteHistoryGeneral, '(\\d+)', 1) as integer), 0) <= ?")
             params.extend([int(low), int(high)])
         elif str(vote_history_type) == "Primary":
-            where.append("coalesce(try_cast(regexp_extract(_VoteHistoryPrimary, '(\\d+)', 1) as integer), 0) >= ? AND coalesce(try_cast(regexp_extract(_VoteHistoryPrimary, '(\\d+)', 1) as integer), 0) <= ?")
+            if "V4P" in columns:
+                where.append("coalesce(try_cast(regexp_extract(cast(\"V4P\" as varchar), '(\\\\d+)', 1) as integer), 0) >= ? AND coalesce(try_cast(regexp_extract(cast(\"V4P\" as varchar), '(\\\\d+)', 1) as integer), 0) <= ?")
+            else:
+                where.append("coalesce(try_cast(regexp_extract(_VoteHistoryPrimary, '(\\d+)', 1) as integer), 0) >= ? AND coalesce(try_cast(regexp_extract(_VoteHistoryPrimary, '(\\d+)', 1) as integer), 0) <= ?")
             params.extend([int(low), int(high)])
         else:
-            where.append("coalesce(try_cast(regexp_extract(_VoteHistory, '(\\d+)', 1) as integer), 0) >= ? AND coalesce(try_cast(regexp_extract(_VoteHistory, '(\\d+)', 1) as integer), 0) <= ?")
+            if "V4A" in columns:
+                where.append("coalesce(try_cast(regexp_extract(cast(\"V4A\" as varchar), '(\\\\d+)', 1) as integer), 0) >= ? AND coalesce(try_cast(regexp_extract(cast(\"V4A\" as varchar), '(\\\\d+)', 1) as integer), 0) <= ?")
+            else:
+                where.append("coalesce(try_cast(regexp_extract(_VoteHistory, '(\\d+)', 1) as integer), 0) >= ? AND coalesce(try_cast(regexp_extract(_VoteHistory, '(\\d+)', 1) as integer), 0) <= ?")
             params.extend([int(low), int(high)])
     if active.get("mib_applied_pick"):
         picked = active["mib_applied_pick"]
