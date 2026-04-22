@@ -3088,6 +3088,316 @@ header_html = f"""
 """
 st.markdown(header_html, unsafe_allow_html=True)
 
+
+
+def format_lookup_date(value) -> str:
+    if value is None:
+        return ""
+    try:
+        ts = pd.to_datetime(value, errors="coerce")
+        if pd.isna(ts):
+            return normalize_export_text(value)
+        return ts.strftime("%m/%d/%Y")
+    except Exception:
+        return normalize_export_text(value)
+
+
+def format_lookup_phone(value) -> str:
+    digits = clean_phone_value(value)
+    if len(digits) == 10:
+        return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+    return normalize_export_text(value)
+
+
+def get_detail_columns(detail_paths):
+    con = get_conn()
+    paths_sql = "[" + ", ".join(sql_string_literal(p) for p in detail_paths) + "]"
+    df = con.execute(f"DESCRIBE SELECT * FROM read_parquet({paths_sql})").df()
+    return df["column_name"].tolist()
+
+
+def _detail_col_expr(columns, candidates, fallback="''"):
+    col = first_existing_detail(columns, candidates)
+    if col is None:
+        return fallback, None
+    return f"coalesce(cast(src.{quote_ident(col)} as varchar), '')", col
+
+
+def search_voters_for_lookup(active_filters, search_text: str, limit: int = 50, use_filtered_universe: bool = False) -> pd.DataFrame:
+    detail_paths, _ = ensure_detail_shards()
+    detail_columns = get_detail_columns(detail_paths)
+    lookup_filters = active_filters if use_filtered_universe else {}
+    base_sql, base_params = build_detail_export_sql(detail_paths, lookup_filters)
+
+    first_expr, first_col = _detail_col_expr(detail_columns, ["FirstName", "First Name"])
+    middle_expr, middle_col = _detail_col_expr(detail_columns, ["MiddleName", "Middle Name"])
+    last_expr, last_col = _detail_col_expr(detail_columns, ["LastName", "Last Name"])
+    suffix_expr, suffix_col = _detail_col_expr(detail_columns, ["NameSuffix", "Suffix", "Name Suffix"])
+    full_name_expr, full_name_col = _detail_col_expr(detail_columns, ["FullName", "Full Name", "Name"], fallback=None)
+    house_expr, house_col = _detail_col_expr(detail_columns, ["House Number", "HouseNumber", "Street Number"])
+    street_expr, street_col = _detail_col_expr(detail_columns, ["Street Name", "StreetName", "Street"])
+    apt_expr, apt_col = _detail_col_expr(detail_columns, ["Apartment Number", "ApartmentNumber", "Unit", "Apt"])
+    city_expr, city_col = _detail_col_expr(detail_columns, ["MailingCity", "Mailing City", "City", "MailCity"])
+    state_expr, state_col = _detail_col_expr(detail_columns, ["MailingState", "Mailing State", "State", "MailState"])
+    zip_expr, zip_col = _detail_col_expr(detail_columns, ["MailingZip", "Mailing Zip", "ZIP", "Zip", "ZipCode", "ZIPCODE", "MailZip"])
+    email_expr, email_col = _detail_col_expr(detail_columns, ["Email", "EmailAddress", "Email Address"])
+    mobile_expr, mobile_col = _detail_col_expr(detail_columns, ["Mobile", "Cell", "CellPhone", "Cell Phone"])
+    landline_expr, landline_col = _detail_col_expr(detail_columns, ["Landline", "Phone", "HomePhone", "PrimaryPhone", "Primary Phone"])
+    pa_id_expr, pa_id_col = _detail_col_expr(detail_columns, ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "State Voter ID", "Voter ID", "VoterID"])
+
+    if full_name_col:
+        lookup_name_expr = full_name_expr
+    else:
+        lookup_name_expr = f"trim(concat_ws(' ', {first_expr}, {middle_expr}, {last_expr}, {suffix_expr}))"
+
+    lookup_address_expr = f"trim(concat_ws(' ', {house_expr}, {street_expr}, case when trim({apt_expr}) <> '' then concat('Apt ', trim({apt_expr})) else '' end))"
+    lookup_city_state_zip_expr = f"trim(concat_ws(', ', nullif(trim({city_expr}), ''), trim(concat_ws(' ', nullif(trim({state_expr}), ''), nullif(trim({zip_expr}), '')))))"
+    lookup_key_expr = f"trim(concat_ws('|', nullif(trim({pa_id_expr}), ''), {lookup_name_expr}, {lookup_address_expr}))"
+
+    searchable_parts = [
+        lookup_name_expr,
+        lookup_address_expr,
+        city_expr,
+        state_expr,
+        zip_expr,
+        pa_id_expr,
+        email_expr,
+        mobile_expr,
+        landline_expr,
+        "coalesce(cast(src.\"County\" as varchar), '')" if "County" in detail_columns else "''",
+        "coalesce(cast(src.\"Municipality\" as varchar), '')" if "Municipality" in detail_columns else "''",
+        "coalesce(cast(src.\"Precinct\" as varchar), '')" if "Precinct" in detail_columns else "''",
+    ]
+    haystack_expr = "upper(concat_ws(' ', " + ", ".join(searchable_parts) + "))"
+
+    tokens = [tok for tok in re.findall(r"[A-Za-z0-9@._#/-]+", str(search_text).upper()) if tok]
+    where_parts = []
+    params = list(base_params)
+    for tok in tokens:
+        where_parts.append(f"{haystack_expr} LIKE ?")
+        params.append(f"%{tok}%")
+    search_where_sql = (" AND " + " AND ".join(where_parts)) if where_parts else ""
+
+    sql = f"""
+        SELECT
+            src.*,
+            {lookup_name_expr} AS _LookupName,
+            {lookup_address_expr} AS _LookupAddress,
+            {lookup_city_state_zip_expr} AS _LookupCityStateZip,
+            {pa_id_expr} AS _LookupPAID,
+            {lookup_key_expr} AS _LookupRowKey
+        FROM ({base_sql}) src
+        WHERE 1=1
+        {search_where_sql}
+        ORDER BY _LookupName, _LookupAddress
+        LIMIT {int(limit)}
+    """
+    return get_conn().execute(sql, params).df()
+
+
+def get_lookup_selected_row(results_df: pd.DataFrame):
+    if results_df is None or results_df.empty:
+        return None
+    selected_key = st.session_state.get("lookup_selected_key", "")
+    if selected_key:
+        hit = results_df[results_df["_LookupRowKey"].astype(str) == str(selected_key)]
+        if not hit.empty:
+            return hit.iloc[0]
+    return results_df.iloc[0]
+
+
+def get_lookup_value(row, candidates, formatter=None) -> str:
+    for col in candidates:
+        if col in row.index:
+            value = row.get(col)
+            if formatter is not None:
+                rendered = formatter(value)
+            else:
+                rendered = normalize_export_text(value)
+            if normalize_export_text(rendered) != "":
+                return rendered
+    return ""
+
+
+def build_lookup_full_name(row) -> str:
+    full_name = get_lookup_value(row, ["FullName", "Full Name", "Name"])
+    if full_name:
+        return normalize_name_value(full_name)
+    parts = [
+        get_lookup_value(row, ["FirstName", "First Name"]),
+        get_lookup_value(row, ["MiddleName", "Middle Name"]),
+        get_lookup_value(row, ["LastName", "Last Name"]),
+        get_lookup_value(row, ["NameSuffix", "Suffix", "Name Suffix"]),
+    ]
+    return normalize_name_value(" ".join([p for p in parts if p]).strip())
+
+
+def build_lookup_address(row) -> str:
+    line1 = normalize_address_value(" ".join([
+        get_lookup_value(row, ["House Number", "HouseNumber", "Street Number"]),
+        get_lookup_value(row, ["Street Name", "StreetName", "Street"]),
+    ]).strip())
+    apt = get_lookup_value(row, ["Apartment Number", "ApartmentNumber", "Unit", "Apt"])
+    if apt:
+        line1 = f"{line1} Apt {apt}".strip()
+    city = normalize_city_value(get_lookup_value(row, ["MailingCity", "Mailing City", "City", "MailCity"]))
+    state = normalize_state_value(get_lookup_value(row, ["MailingState", "Mailing State", "State", "MailState"]))
+    zip_code = clean_zip_value(get_lookup_value(row, ["MailingZip", "Mailing Zip", "ZIP", "Zip", "ZipCode", "ZIPCODE", "MailZip"]))
+    line2 = " ".join([p for p in [city + "," if city else "", state, zip_code] if p]).strip().replace(" ,", ",")
+    if line1 and line2:
+        return f"{line1}\n{line2}"
+    return line1 or line2
+
+
+def render_lookup_field_block(title: str, rows: list[tuple[str, str]]):
+    clean_rows = [{"Field": label, "Value": value} for label, value in rows if normalize_export_text(value) != ""]
+    st.markdown(f"#### {title}")
+    if not clean_rows:
+        st.caption("No data available")
+    else:
+        st.dataframe(pd.DataFrame(clean_rows), use_container_width=True, hide_index=True)
+
+
+def render_voter_lookup_tab(active_filters, columns):
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="small-header">Voter Lookup</div>', unsafe_allow_html=True)
+    st.caption("Search the full statewide active-voter set by name, address, PA ID, phone, or email. Use the checkbox below only if you want lookup limited to the current filtered universe.")
+
+    use_filtered_universe = st.checkbox(
+        "Limit lookup to current filtered universe",
+        value=st.session_state.get("lookup_use_filtered_universe", False),
+        key="lookup_use_filtered_universe",
+    )
+
+    search_cols = st.columns([2.3, 0.9, 0.9], gap="medium")
+    with search_cols[0]:
+        lookup_query = st.text_input(
+            "Search voters",
+            value=st.session_state.get("lookup_query", ""),
+            placeholder="Example: Jane Smith, 123 Main, PA ID, phone, or email",
+            key="lookup_query_input",
+        )
+    with search_cols[1]:
+        result_limit = st.selectbox("Max Results", [10, 25, 50, 100], index=1, key="lookup_result_limit")
+    with search_cols[2]:
+        st.markdown("")
+        search_clicked = st.button("Search", use_container_width=True, type="primary", key="lookup_search_button")
+
+    if st.button("Clear Lookup", use_container_width=False, key="lookup_clear_button"):
+        st.session_state["lookup_query"] = ""
+        st.session_state["lookup_query_input"] = ""
+        st.session_state["lookup_results_records"] = []
+        st.session_state["lookup_selected_key"] = ""
+        st.rerun()
+
+    should_search = search_clicked or (
+        lookup_query
+        and (
+            lookup_query != st.session_state.get("lookup_last_query", "")
+            or bool(use_filtered_universe) != bool(st.session_state.get("lookup_last_scope_filtered", False))
+        )
+        and len(lookup_query.strip()) >= 2
+    )
+
+    if should_search:
+        with st.spinner("Searching voter detail shards..."):
+            results_df = search_voters_for_lookup(
+                active_filters,
+                lookup_query.strip(),
+                limit=int(result_limit),
+                use_filtered_universe=use_filtered_universe,
+            )
+            st.session_state["lookup_query"] = lookup_query.strip()
+            st.session_state["lookup_last_query"] = lookup_query.strip()
+            st.session_state["lookup_last_scope_filtered"] = bool(use_filtered_universe)
+            st.session_state["lookup_results_records"] = results_df.to_dict("records")
+            st.session_state["lookup_selected_key"] = results_df.iloc[0]["_LookupRowKey"] if not results_df.empty else ""
+
+    results_df = pd.DataFrame(st.session_state.get("lookup_results_records", []))
+
+    if not lookup_query.strip():
+        st.info("Type a name, address, PA ID, phone number, or email to find a voter.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    if results_df.empty:
+        st.warning("No voters matched that search in the selected lookup scope.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    scope_label = "current filtered universe" if use_filtered_universe else "statewide active-voter set"
+    st.caption(f"{len(results_df):,} result(s) loaded from the {scope_label}")
+    left_col, right_col = st.columns([1.1, 1.9], gap="medium")
+
+    with left_col:
+        st.markdown("#### Results")
+        for _, result_row in results_df.iterrows():
+            title = normalize_name_value(normalize_export_text(result_row.get("_LookupName", ""))) or "Unnamed voter"
+            line1 = normalize_address_value(normalize_export_text(result_row.get("_LookupAddress", "")))
+            line2 = normalize_export_text(result_row.get("_LookupCityStateZip", ""))
+            paid = normalize_numeric_string(result_row.get("_LookupPAID", ""))
+            label_parts = [title]
+            if line1:
+                label_parts.append(line1)
+            if line2:
+                label_parts.append(line2)
+            if paid:
+                label_parts.append(f"PA ID {paid}")
+            button_label = "\n".join(label_parts)
+            if st.button(button_label, key=f"lookup_pick_{result_row.get('_LookupRowKey', '')}", use_container_width=True):
+                st.session_state["lookup_selected_key"] = result_row.get("_LookupRowKey", "")
+                st.rerun()
+
+    selected_row = get_lookup_selected_row(results_df)
+    if selected_row is None:
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    with right_col:
+        voter_name = build_lookup_full_name(selected_row) or normalize_name_value(normalize_export_text(selected_row.get("_LookupName", ""))) or "Voter profile"
+        st.markdown(f"### {voter_name}")
+        address_block = build_lookup_address(selected_row)
+        if address_block:
+            st.markdown(address_block.replace("\n", "  \n"))
+
+        top_metrics = st.columns(4, gap="small")
+        top_metrics[0].metric("Party", get_lookup_value(selected_row, ["Party", "_PartyNorm"]) or "—")
+        top_metrics[1].metric("Gender", get_lookup_value(selected_row, ["Gender", "Sex", "_Gender"]) or "—")
+        top_metrics[2].metric("Age", get_lookup_value(selected_row, ["Age"], formatter=lambda v: normalize_numeric_string(v)) or "—")
+        top_metrics[3].metric("PA ID", get_lookup_value(selected_row, ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "State Voter ID", "Voter ID", "VoterID"], formatter=lambda v: normalize_numeric_string(v)) or "—")
+
+        info_cols = st.columns(2, gap="medium")
+        with info_cols[0]:
+            render_lookup_field_block("Voter Details", [
+                ("Date of Birth", get_lookup_value(selected_row, ["DOB", "Date of Birth", "BirthDate", "Birth Date"], formatter=format_lookup_date)),
+                ("Registration Date", get_lookup_value(selected_row, ["RegistrationDate", "Registration Date", "_RegistrationDate"], formatter=format_lookup_date)),
+                ("County", get_lookup_value(selected_row, ["County"])),
+                ("Municipality", get_lookup_value(selected_row, ["Municipality"])),
+                ("Precinct", get_lookup_value(selected_row, ["Precinct"])),
+                ("Congressional", get_lookup_value(selected_row, ["USC", "Congressional District", "Congress District"])),
+                ("State Senate", get_lookup_value(selected_row, ["STS", "State Senate", "Senate District"])),
+                ("State House", get_lookup_value(selected_row, ["STH", "State House", "House District"])),
+                ("School District", get_lookup_value(selected_row, ["School District", "SchoolDistrict"])),
+            ])
+        with info_cols[1]:
+            render_lookup_field_block("Contact + Mail Ballot", [
+                ("Mobile", get_lookup_value(selected_row, ["Mobile", "Cell", "CellPhone", "Cell Phone"], formatter=format_lookup_phone)),
+                ("Landline", get_lookup_value(selected_row, ["Landline", "Phone", "HomePhone", "PrimaryPhone", "Primary Phone"], formatter=format_lookup_phone)),
+                ("Email", get_lookup_value(selected_row, ["Email", "EmailAddress", "Email Address"])),
+                ("Mail Ballot Applied", get_lookup_value(selected_row, ["MIB_Applied", "_MIBApplied"])),
+                ("Mail Ballot Status", get_lookup_value(selected_row, ["MIB_BALLOT", "_MIBBallot"])),
+                ("Permanent Mail", get_lookup_value(selected_row, ["MB_PERM", "MB_Perm", "MB_Pern", "_MBPerm"])),
+                ("Mail Ballot Score", get_lookup_value(selected_row, ["MB_AProp_Score", "MMB_AProp_Score", "_MBScore"])),
+            ])
+
+        st.markdown("#### Vote History Summary")
+        vote_cols = st.columns(3, gap="small")
+        vote_cols[0].metric("All Elections (V4A)", get_lookup_value(selected_row, ["V4A"], formatter=lambda v: normalize_numeric_string(v)) or "—")
+        vote_cols[1].metric("General (V4G)", get_lookup_value(selected_row, ["V4G"], formatter=lambda v: normalize_numeric_string(v)) or "—")
+        vote_cols[2].metric("Primary (V4P)", get_lookup_value(selected_row, ["V4P"], formatter=lambda v: normalize_numeric_string(v)) or "—")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
 if "data_loaded" not in st.session_state:
     st.session_state.data_loaded = False
 if "filters_applied" not in st.session_state:
@@ -3430,7 +3740,7 @@ divider()
 if large_filter_mode:
     st.warning("Large statewide filter detected. To keep the app stable, some detail-heavy tracking calculations are temporarily simplified until you narrow the universe.")
 
-dashboard_tabs = st.tabs(["Overview", "Contact Tracking", "Output Center"])
+dashboard_tabs = st.tabs(["Overview", "Contact Tracking", "Output Center", "Voter Lookup"])
 
 with dashboard_tabs[0]:
     if large_filter_mode:
@@ -3978,3 +4288,9 @@ with dashboard_tabs[2]:
     
     
         st.markdown('</div>', unsafe_allow_html=True)
+
+
+with dashboard_tabs[3]:
+    if large_filter_mode:
+        st.info("Voter Lookup is available here even in large-universe mode, but it searches inside the current filtered universe. Narrow geography if you want a smaller result set.")
+    render_voter_lookup_tab(active, columns)
