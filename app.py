@@ -1612,6 +1612,8 @@ def apply_followup_preset(preset_name: str):
 
     st.session_state.active_filters = current
     st.session_state.filters_applied = True
+    st.session_state.workspace_mode = "universe"
+    st.session_state.lookup_view_active = False
     st.rerun()
 
 def get_global_support_level_options() -> list[str]:
@@ -3458,6 +3460,195 @@ def render_lookup_vote_history_tables(row):
     st.markdown(legend_html, unsafe_allow_html=True)
 
 
+
+
+def get_selected_lookup_row(results_df: pd.DataFrame):
+    if results_df is None or results_df.empty:
+        return None
+    selected_key = st.session_state.get("lookup_selected_key", "")
+    valid_keys = set(results_df["_LookupRowKey"].tolist()) if "_LookupRowKey" in results_df.columns else set()
+    if selected_key and selected_key in valid_keys:
+        return results_df.loc[results_df["_LookupRowKey"] == selected_key].iloc[0]
+    first_row = results_df.iloc[0]
+    st.session_state["lookup_selected_key"] = first_row.get("_LookupRowKey", "")
+    return first_row
+
+
+def _pdf_vote_cell_fill(vm_raw: str):
+    raw = normalize_export_text(vm_raw).upper()
+    if raw == "MB":
+        return colors.HexColor("#E8F5E9")
+    if raw == "AP":
+        return colors.HexColor("#E3F2FD")
+    if raw in {"PROVISIONAL", "PV", "P"}:
+        return colors.HexColor("#FFF3E0")
+    return colors.HexColor("#ECEFF1")
+
+
+def _pdf_vote_method_code(vm_raw: str) -> str:
+    raw = normalize_export_text(vm_raw).upper()
+    if raw == "MB":
+        return "MB"
+    if raw == "AP":
+        return "AP"
+    if raw in {"PROVISIONAL", "PV", "P"}:
+        return "P"
+    return "DNV"
+
+
+def _draw_pdf_vote_history_table(c, row, x, y, title, prefix, start_year=26, end_year=20):
+    years = list(range(start_year, end_year - 1, -1))
+    cell_w = 48
+    row_h = 20
+    label_w = 56
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(x, y, title)
+    top = y - 14
+
+    c.setFillColor(colors.HexColor("#F0F2F5"))
+    c.rect(x, top-row_h, label_w, row_h, stroke=1, fill=1)
+    for i, yy in enumerate(years):
+        cx = x + label_w + i * cell_w
+        c.setFillColor(colors.HexColor("#F0F2F5"))
+        c.rect(cx, top-row_h, cell_w, row_h, stroke=1, fill=1)
+        c.setFillColor(colors.black)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawCentredString(cx + cell_w/2, top-13, f"{prefix}{yy}")
+
+    party_y = top - row_h
+    c.setFillColor(colors.white)
+    c.rect(x, party_y-row_h, label_w, row_h, stroke=1, fill=1)
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 8)
+    c.drawString(x+6, party_y-13, "Party")
+    for i, yy in enumerate(years):
+        cx = x + label_w + i * cell_w
+        vm_raw = normalize_export_text(get_lookup_value(row, [f"{prefix}{yy}_VM"])).upper()
+        party_val = normalize_export_text(get_lookup_value(row, [f"{prefix}{yy}_P"]))
+        c.setFillColor(_pdf_vote_cell_fill(vm_raw))
+        c.rect(cx, party_y-row_h, cell_w, row_h, stroke=1, fill=1)
+        c.setFillColor(colors.HexColor("#1E3A8A") if vm_raw else colors.HexColor("#667085"))
+        c.setFont("Helvetica-Bold", 9)
+        c.drawCentredString(cx + cell_w/2, party_y-13, party_val or "—")
+
+    method_y = party_y - row_h
+    c.setFillColor(colors.white)
+    c.rect(x, method_y-row_h, label_w, row_h, stroke=1, fill=1)
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 8)
+    c.drawString(x+6, method_y-13, "Method")
+    for i, yy in enumerate(years):
+        cx = x + label_w + i * cell_w
+        vm_raw = normalize_export_text(get_lookup_value(row, [f"{prefix}{yy}_VM"])).upper()
+        c.setFillColor(_pdf_vote_cell_fill(vm_raw))
+        c.rect(cx, method_y-row_h, cell_w, row_h, stroke=1, fill=1)
+        c.setFillColor(colors.black if vm_raw else colors.HexColor("#98A2B3"))
+        c.setFont("Helvetica-Bold", 9)
+        c.drawCentredString(cx + cell_w/2, method_y-13, _pdf_vote_method_code(vm_raw))
+
+    return method_y - row_h - 10
+
+
+def build_voter_report_pdf_bytes(row) -> bytes:
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=landscape(letter))
+    width, height = landscape(letter)
+    margin_x = 24
+
+    voter_name = build_lookup_full_name(row) or "Unnamed voter"
+    c.setFont("Helvetica-Bold", 18)
+    c.setFillColor(colors.HexColor("#8A1C1C"))
+    c.drawString(margin_x, height - 28, voter_name.upper())
+    c.setFillColor(colors.black)
+
+    y = height - 56
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(margin_x, y, "Address")
+    c.setFont("Helvetica", 10)
+    for line in [ln for ln in build_lookup_address(row).split("\n") if normalize_export_text(ln)]:
+        y -= 14
+        c.drawString(margin_x, y, line)
+
+    left_x, mid_x, right_x = margin_x, 260, 520
+    top_y = height - 90
+
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(left_x, top_y, "Districts + Geography")
+    yy = top_y - 18
+    for label, value in [
+        ("County", get_lookup_value(row, ["County"])),
+        ("Municipality", get_lookup_value(row, ["Municipality"])),
+        ("Precinct", get_lookup_value(row, ["Precinct"])),
+        ("USC", get_lookup_value(row, ["USC", "Congressional"], formatter=lambda v: normalize_numeric_string(v))),
+        ("STS", get_lookup_value(row, ["STS", "State Senate"], formatter=lambda v: normalize_numeric_string(v))),
+        ("STH", get_lookup_value(row, ["STH", "State House"], formatter=lambda v: normalize_numeric_string(v))),
+        ("School District", get_lookup_value(row, ["School District"])),
+    ]:
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(left_x, yy, f"{label}:")
+        c.setFont("Helvetica", 9)
+        c.drawString(left_x + 82, yy, normalize_export_text(value) or "—")
+        yy -= 14
+
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(mid_x, top_y, "Voter Snapshot")
+    yy = top_y - 18
+    for label, value in [
+        ("DOB", get_lookup_value(row, ["DOB", "DateOfBirth", "Birth Date"], formatter=format_lookup_date)),
+        ("Reg Date", get_lookup_value(row, ["RegistrationDate", "Registration Date"], formatter=format_lookup_date)),
+        ("Last Vote", get_lookup_value(row, ["Last Vote", "LastVote"], formatter=format_lookup_date) or get_lookup_value(row, ["Last Vote", "LastVote"])),
+        ("Last Change", get_lookup_value(row, ["Last Change Date", "LastChangeDate"], formatter=format_lookup_date) or get_lookup_value(row, ["Last Change", "LastChange"])),
+        ("Party", get_lookup_value(row, ["Party"])),
+        ("Gender", get_lookup_value(row, ["Gender", "Sex"])),
+        ("Age", get_lookup_value(row, ["Age"], formatter=lambda v: normalize_numeric_string(v))),
+        ("PA ID", get_lookup_value(row, ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "VoterID"], formatter=lambda v: normalize_numeric_string(v))),
+    ]:
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(mid_x, yy, f"{label}:")
+        c.setFont("Helvetica", 9)
+        c.drawString(mid_x + 70, yy, normalize_export_text(value) or "—")
+        yy -= 14
+
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(right_x, top_y, "Contact + Mail Ballot")
+    yy = top_y - 18
+    for label, value in [
+        ("Mobile", format_lookup_phone(get_lookup_value(row, ["Mobile"]))),
+        ("Landline", format_lookup_phone(get_lookup_value(row, ["Landline", "PrimaryPhone", "Phone"]))),
+        ("Email", get_lookup_value(row, ["Email"])),
+        ("Applied", get_lookup_value(row, ["MIB_Applied"])),
+        ("Status", get_lookup_value(row, ["MIB_BALLOT"])),
+        ("Permanent", get_lookup_value(row, ["MB_PERM", "MB_Perm", "MB_Pern"])),
+        ("MB Score", get_lookup_value(row, ["MB_AProp_Score", "MMB_AProp_Score"], formatter=lambda v: normalize_numeric_string(v))),
+    ]:
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(right_x, yy, f"{label}:")
+        c.setFont("Helvetica", 9)
+        c.drawString(right_x + 62, yy, (normalize_export_text(value) or "—")[:28])
+        yy -= 14
+
+    table_y = 360
+    table_y = _draw_pdf_vote_history_table(c, row, margin_x, table_y, "General Elections", "G")
+    table_y = _draw_pdf_vote_history_table(c, row, margin_x, table_y - 8, "Primary Elections", "P")
+
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(margin_x, 72, "Legend:")
+    c.setFont("Helvetica", 9)
+    legend_items = ["MB = Mail Ballot", "AP = At Poll", "P = Provisional", "DNV = Did Not Vote"]
+    lx = margin_x + 48
+    for item in legend_items:
+        c.drawString(lx, 72, item)
+        lx += 128
+
+    c.showPage()
+    c.save()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def render_lookup_empty_workspace():
+    st.markdown('<div class="section-card empty-shell"><div class="small-header">Voter Lookup</div><div class="tiny-muted">Open <strong>Voter Lookup</strong> in the left menu, enter a voter search, and click <strong>Search</strong>.</div></div>', unsafe_allow_html=True)
+
 def render_lookup_result_card(result_row, selected: bool):
     title = normalize_name_value(normalize_export_text(result_row.get("_LookupName", ""))) or "Unnamed voter"
     party = normalize_export_text(result_row.get("Party", ""))
@@ -3491,7 +3682,7 @@ def render_voter_lookup_results():
     st.caption("Showing lookup results from the full statewide active voter file.")
 
     if not normalize_export_text(lookup_query):
-        st.info("Open Voter Lookup in the left menu, enter a search, and click Search.")
+        st.info("Enter a voter search on the left and click Search.")
         st.markdown('</div>', unsafe_allow_html=True)
         return
 
@@ -3501,7 +3692,7 @@ def render_voter_lookup_results():
         return
 
     st.caption(f"{len(results_df):,} result(s) found for: {lookup_query}")
-    left_col, right_col = st.columns([1.05, 1.95], gap="large")
+    left_col, right_col = st.columns([1.02, 1.98], gap="large")
 
     with left_col:
         st.markdown("#### Search Results")
@@ -3509,25 +3700,33 @@ def render_voter_lookup_results():
             row_key = result_row.get("_LookupRowKey", "")
             is_selected = st.session_state.get("lookup_selected_key", "") == row_key
             render_lookup_result_card(result_row, is_selected)
-            button_label = "Selected" if is_selected else "View Voter"
-            button_type = "primary" if is_selected else "secondary"
-            if st.button(button_label, key=f'lookup_pick_{row_key}', use_container_width=True, type=button_type):
+            if st.button("Selected" if is_selected else "View Voter", key=f'lookup_pick_{row_key}', use_container_width=True, type="primary" if is_selected else "secondary"):
                 st.session_state["lookup_selected_key"] = row_key
                 st.rerun()
 
-    selected_key = st.session_state.get("lookup_selected_key", "")
-    if selected_key and selected_key in set(results_df["_LookupRowKey"].tolist()):
-        selected_row = results_df.loc[results_df["_LookupRowKey"] == selected_key].iloc[0]
-    else:
-        selected_row = results_df.iloc[0]
-        st.session_state["lookup_selected_key"] = selected_row.get("_LookupRowKey", "")
+    selected_row = get_selected_lookup_row(results_df)
+    if selected_row is None:
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
 
     with right_col:
         voter_name = normalize_name_value(normalize_export_text(selected_row.get("_LookupName", ""))) or "Unnamed voter"
-        st.markdown(f"## {voter_name}")
-        address_block = build_lookup_address(selected_row)
-        if address_block:
-            st.markdown(address_block.replace("\n", "  \n"))
+        header_cols = st.columns([0.78, 0.22])
+        with header_cols[0]:
+            st.markdown(f"## {voter_name}")
+            address_block = build_lookup_address(selected_row)
+            if address_block:
+                st.markdown(address_block.replace("\n", "  \n"))
+        with header_cols[1]:
+            pdf_bytes = build_voter_report_pdf_bytes(selected_row)
+            safe_name = sanitize_filename_part(voter_name)
+            st.download_button(
+                "Download PDF Report",
+                data=pdf_bytes,
+                file_name=f"{safe_name}_voter_report.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
 
         metric_cols = st.columns(4, gap="small")
         metric_cols[0].metric("Party", get_lookup_value(selected_row, ["Party"], formatter=lambda v: normalize_export_text(v)) or "—")
@@ -3540,7 +3739,7 @@ def render_voter_lookup_results():
             render_lookup_field_block("Voter Details", [
                 ("Date of Birth", get_lookup_value(selected_row, ["DOB", "DateOfBirth", "Birth Date"], formatter=format_lookup_date)),
                 ("Registration Date", get_lookup_value(selected_row, ["RegistrationDate", "Registration Date"], formatter=format_lookup_date)),
-                ("Last Vote", get_lookup_value(selected_row, ["Last Vote", "LastVote"])),
+                ("Last Vote", get_lookup_value(selected_row, ["Last Vote", "LastVote"], formatter=format_lookup_date) or get_lookup_value(selected_row, ["Last Vote", "LastVote"])),
                 ("Last Change", get_lookup_value(selected_row, ["Last Change", "LastChange"])),
                 ("Last Change Date", get_lookup_value(selected_row, ["Last Change Date", "LastChangeDate"], formatter=format_lookup_date)),
                 ("County", get_lookup_value(selected_row, ["County"])),
@@ -3568,12 +3767,22 @@ def render_voter_lookup_results():
 
 
 def render_lookup_sidebar(active_filters, columns):
-    with st.expander("Voter Lookup", expanded=False):
+    if st.session_state.pop("lookup_clear_requested", False):
+        st.session_state["lookup_query"] = ""
+        st.session_state["lookup_results_records"] = []
+        st.session_state["lookup_selected_key"] = ""
+        st.session_state["lookup_last_query"] = ""
+        st.session_state["lookup_view_active"] = False
+        st.session_state["lookup_query_input"] = ""
+
+    with st.expander("Voter Lookup", expanded=st.session_state.get("workspace_mode", "universe") == "lookup"):
         st.caption("Search the full statewide active voter file by name, county, address, PA ID, phone, or email.")
+        if st.button("Show Voter Lookup", use_container_width=True, key="show_lookup_workspace"):
+            st.session_state.workspace_mode = "lookup"
+            st.rerun()
         with st.form("lookup_form", clear_on_submit=False):
             lookup_query = st.text_input(
                 "Search voters",
-                value=st.session_state.get("lookup_query", ""),
                 placeholder="Example: Jane Smith Lancaster, Jane Smith 17520, PA ID, phone, or email",
                 key="lookup_query_input",
             )
@@ -3583,12 +3792,8 @@ def render_lookup_sidebar(active_filters, columns):
             clear_clicked = action_cols[1].form_submit_button("Clear Lookup", use_container_width=True)
 
         if clear_clicked:
-            st.session_state["lookup_query"] = ""
-            st.session_state["lookup_query_input"] = ""
-            st.session_state["lookup_results_records"] = []
-            st.session_state["lookup_selected_key"] = ""
-            st.session_state["lookup_last_query"] = ""
-            st.session_state["lookup_view_active"] = False
+            st.session_state["lookup_clear_requested"] = True
+            st.session_state.workspace_mode = "lookup"
             st.rerun()
 
         if search_clicked and lookup_query.strip():
@@ -3599,7 +3804,9 @@ def render_lookup_sidebar(active_filters, columns):
             st.session_state["lookup_results_records"] = results_df.to_dict("records")
             st.session_state["lookup_selected_key"] = results_df.iloc[0]["_LookupRowKey"] if not results_df.empty else ""
             st.session_state["lookup_view_active"] = True
+            st.session_state.workspace_mode = "lookup"
             st.rerun()
+
 
 if "data_loaded" not in st.session_state:
     st.session_state.data_loaded = False
@@ -3623,6 +3830,10 @@ if "walk_results_filters" not in st.session_state:
     st.session_state.walk_results_filters = {}
 if "lookup_view_active" not in st.session_state:
     st.session_state.lookup_view_active = False
+if "workspace_mode" not in st.session_state:
+    st.session_state.workspace_mode = "universe"
+if "lookup_query_input" not in st.session_state:
+    st.session_state.lookup_query_input = st.session_state.get("lookup_query", "")
 
 with st.sidebar:
     st.header("Candidate Connect")
@@ -3641,7 +3852,11 @@ with st.sidebar:
         cols = st.session_state.columns
         opts = st.session_state.options
 
-        with st.expander("Create Universe", expanded=False):
+        with st.expander("Create Universe", expanded=st.session_state.get("workspace_mode", "universe") == "universe"):
+            if st.button("Show Create Universe", use_container_width=True, key="show_universe_workspace"):
+                st.session_state.workspace_mode = "universe"
+                st.session_state.lookup_view_active = False
+                st.rerun()
             with st.form("filter_form", clear_on_submit=False):
                 with st.expander("Geography", expanded=False):
                     geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in cols]
@@ -3754,9 +3969,13 @@ with st.sidebar:
             if clear_filters:
                 st.session_state.active_filters = {}
                 st.session_state.filters_applied = False
+                st.session_state.workspace_mode = "universe"
+                st.session_state.lookup_view_active = False
                 st.rerun()
 
             if apply_filters:
+                st.session_state.workspace_mode = "universe"
+                st.session_state.lookup_view_active = False
                 st.session_state.active_filters = {
                     **geo_selections,
                     "party_pick": party_pick,
@@ -3836,6 +4055,8 @@ with st.sidebar:
                         if st.button("Load Universe", use_container_width=True, key="load_sidebar_universe"):
                             st.session_state.active_filters = universe_info.get("filters", {})
                             st.session_state.filters_applied = False
+                            st.session_state.workspace_mode = "universe"
+                            st.session_state.lookup_view_active = False
                             st.success(f"Loaded universe: {selected_sidebar_universe}")
                             st.rerun()
                     with delete_col:
@@ -3877,32 +4098,36 @@ if not st.session_state.data_loaded:
     st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to load</div><div class="tiny-muted">Click <strong>Load Voter Data</strong> in the sidebar to open the R2 index shards with DuckDB.</div></div>', unsafe_allow_html=True)
     st.stop()
 
-if not st.session_state.filters_applied and not st.session_state.get("lookup_view_active", False):
-    st.markdown('<div class="section-card empty-shell"><div class="small-header">Create Universe is ready</div><div class="tiny-muted">Choose your filters in the left menu and click <strong>Apply Filters</strong> to run counts and charts, or open <strong>Voter Lookup</strong> to search the statewide file.</div></div>', unsafe_allow_html=True)
-    st.stop()
-
 active = st.session_state.active_filters
 columns = st.session_state.columns
+workspace_mode = st.session_state.get("workspace_mode", "universe")
 
-with st.spinner("Running DuckDB queries..."):
-    metrics = query_metrics(active, columns)
-    large_filter_mode = use_large_filter_mode(active, columns)
-    followup_stats = query_dashboard_followup_stats(active)
-
-    if large_filter_mode:
-        party_df = pd.DataFrame(columns=["Party", "Count"])
-        gender_df = pd.DataFrame(columns=["Gender", "Count"])
-        age_df = pd.DataFrame(columns=["Age Range", "Count"])
-        area_choices = []
+if workspace_mode == "lookup":
+    if st.session_state.get("lookup_view_active", False):
+        render_voter_lookup_results()
     else:
-        party_df = query_chart(active, columns, "_PartyNorm", "Party")
-        gender_df = query_chart(active, columns, "_Gender", "Gender")
-        age_df = query_chart(active, columns, "_AgeRange", "Age Range")
-        area_choices = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in columns]
-
-if st.session_state.get("lookup_view_active", False):
-    render_voter_lookup_results()
+        render_lookup_empty_workspace()
 else:
+    if not st.session_state.filters_applied:
+        st.markdown('<div class="section-card empty-shell"><div class="small-header">Create Universe</div><div class="tiny-muted">Choose your filters in the left menu and click <strong>Apply Filters</strong> to run counts and charts.</div></div>', unsafe_allow_html=True)
+        st.stop()
+
+    with st.spinner("Running DuckDB queries..."):
+        metrics = query_metrics(active, columns)
+        large_filter_mode = use_large_filter_mode(active, columns)
+        followup_stats = query_dashboard_followup_stats(active)
+
+        if large_filter_mode:
+            party_df = pd.DataFrame(columns=["Party", "Count"])
+            gender_df = pd.DataFrame(columns=["Gender", "Count"])
+            age_df = pd.DataFrame(columns=["Age Range", "Count"])
+            area_choices = []
+        else:
+            party_df = query_chart(active, columns, "_PartyNorm", "Party")
+            gender_df = query_chart(active, columns, "_Gender", "Gender")
+            age_df = query_chart(active, columns, "_AgeRange", "Age Range")
+            area_choices = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in columns]
+
     metric_cols = st.columns(5, gap="small")
     metric_values = [
         ("Voters", f"{safe_int(metrics.get('voters')):,}"),
