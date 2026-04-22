@@ -3279,22 +3279,24 @@ def render_voter_lookup_results_panel():
         return
 
     st.caption(f"{len(results_df):,} result(s) loaded for: {lookup_query}")
-    left_col, right_col = st.columns([1.1, 1.9], gap="medium")
+    left_col, right_col = st.columns([1.0, 1.9], gap="large")
 
     with left_col:
         st.markdown("#### Results")
         for _, result_row in results_df.iterrows():
             title = normalize_name_value(normalize_export_text(result_row.get("_LookupName", ""))) or "Unnamed voter"
+            age = get_lookup_value(result_row, ["Age"], formatter=lambda v: normalize_numeric_string(v))
             line1 = normalize_address_value(normalize_export_text(result_row.get("_LookupAddress", "")))
             line2 = normalize_export_text(result_row.get("_LookupCityStateZip", ""))
-            paid = normalize_numeric_string(result_row.get("_LookupPAID", ""))
-            label_parts = [title]
+            county = normalize_export_text(get_lookup_value(result_row, ["County"]))
+            title_line = title if not age else f"{title}, {age}"
+            label_parts = [title_line]
             if line1:
                 label_parts.append(line1)
             if line2:
                 label_parts.append(line2)
-            if paid:
-                label_parts.append(f"PA ID {paid}")
+            if county:
+                label_parts.append(county)
             button_label = "\n".join(label_parts)
             if st.button(button_label, key=f"lookup_pick_{result_row.get('_LookupRowKey', '')}", use_container_width=True):
                 st.session_state["lookup_selected_key"] = result_row.get("_LookupRowKey", "")
@@ -3349,8 +3351,6 @@ def render_voter_lookup_results_panel():
         vote_cols[2].metric("Primary (V4P)", get_lookup_value(selected_row, ["V4P"], formatter=lambda v: normalize_numeric_string(v)) or "—")
 
     st.markdown('</div>', unsafe_allow_html=True)
-
-
 def render_voter_lookup_sidebar(active_filters):
     lookup_query = st.text_input(
         "Search voters",
@@ -3698,7 +3698,7 @@ if not st.session_state.filters_applied and not st.session_state.get("lookup_sho
     st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to work</div><div class="tiny-muted">Open <strong>Create Universe</strong> to build a filtered list, or open <strong>Voter Lookup</strong> to search the statewide voter file.</div></div>', unsafe_allow_html=True)
     st.stop()
 
-if st.session_state.get("lookup_show_panel", False) and not st.session_state.filters_applied:
+if st.session_state.get("lookup_show_panel", False):
     render_voter_lookup_results_panel()
     st.stop()
 
