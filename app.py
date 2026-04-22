@@ -410,7 +410,7 @@ def build_view_sql(columns, local_paths):
             exprs.append("NULL::VARCHAR as _HouseholdKey")
 
     paths_sql = "[" + ", ".join(sql_string_literal(p) for p in local_paths) + "]"
-    return "CREATE OR REPLACE VIEW voters AS SELECT\n    " + ",\n    ".join(exprs) + f"\nFROM read_parquet({paths_sql})"
+    return "CREATE OR REPLACE VIEW voters AS SELECT\n    " + ",\n    ".join(exprs) + f"\nFROM read_parquet({paths_sql}, union_by_name=True)"
 
 def prepare_db(local_paths):
     con = get_conn()
@@ -3138,7 +3138,7 @@ def format_lookup_phone(value) -> str:
 def get_detail_columns(detail_paths):
     con = get_conn()
     paths_sql = "[" + ", ".join(sql_string_literal(p) for p in detail_paths) + "]"
-    df = con.execute(f"DESCRIBE SELECT * FROM read_parquet({paths_sql})").df()
+    df = con.execute(f"DESCRIBE SELECT * FROM read_parquet({paths_sql}, union_by_name=True)").df()
     return df["column_name"].tolist()
 
 
@@ -3707,6 +3707,70 @@ def build_voter_report_pdf_bytes(row) -> bytes:
     return buffer.getvalue()
 
 
+
+
+def get_lookup_household_members(selected_row) -> pd.DataFrame:
+    detail_paths, _ = ensure_detail_shards()
+    detail_columns = get_conn().execute(
+        "DESCRIBE SELECT * FROM read_parquet([" +
+        ", ".join(sql_string_literal(p) for p in detail_paths) +
+        "], union_by_name=True)"
+    ).df()["column_name"].tolist()
+
+    base_sql, base_params = build_detail_export_sql(detail_paths, {})
+    house_key = normalize_export_text(selected_row.get("_HouseholdKey", ""))
+    pa_id_val = normalize_numeric_string(
+        get_lookup_value(
+            selected_row,
+            ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "VoterID"]
+        )
+    )
+
+    if house_key:
+        member_where = "coalesce(_HouseholdKey, '') = ?"
+        member_params = [house_key]
+    else:
+        house_num = normalize_export_text(get_lookup_value(selected_row, ["House Number", "HouseNumber", "Street Number"]))
+        street_name = normalize_export_text(get_lookup_value(selected_row, ["Street Name", "StreetName", "Street"]))
+        apt_num = normalize_export_text(get_lookup_value(selected_row, ["Apartment Number", "ApartmentNumber", "Unit", "Apt"]))
+        city_val = normalize_export_text(get_lookup_value(selected_row, ["MailingCity", "Mailing City", "City", "MailCity"]))
+        county_val = normalize_export_text(get_lookup_value(selected_row, ["County"]))
+        member_where = """
+            upper(trim(coalesce(cast("House Number" as varchar), ''))) = upper(trim(?))
+            AND upper(trim(coalesce(cast("Street Name" as varchar), ''))) = upper(trim(?))
+            AND upper(trim(coalesce(cast("Apartment Number" as varchar), ''))) = upper(trim(?))
+            AND upper(trim(coalesce(cast("MailingCity" as varchar), cast("City" as varchar), ''))) = upper(trim(?))
+            AND upper(trim(coalesce(cast("County" as varchar), ''))) = upper(trim(?))
+        """
+        member_params = [house_num, street_name, apt_num, city_val, county_val]
+
+    members_df = get_conn().execute(
+        f"""
+        SELECT *
+        FROM ({base_sql}) src
+        WHERE {member_where}
+        ORDER BY upper(trim(coalesce(cast("LastName" as varchar), ''))),
+                 upper(trim(coalesce(cast("FirstName" as varchar), ''))),
+                 try_cast("Age" as double) DESC NULLS LAST
+        """,
+        base_params + member_params,
+    ).df()
+
+    if members_df.empty:
+        return members_df
+
+    if pa_id_val:
+        def _same_selected(row):
+            row_pa = normalize_numeric_string(
+                get_lookup_value(row, ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "VoterID"])
+            )
+            return row_pa == pa_id_val
+        members_df["_IsSelectedMember"] = members_df.apply(_same_selected, axis=1)
+    else:
+        members_df["_IsSelectedMember"] = False
+
+    return members_df.reset_index(drop=True)
+
 def render_lookup_empty_workspace():
     st.markdown('<div class="section-card empty-shell"><div class="small-header">Voter Lookup</div><div class="tiny-muted">Open <strong>Voter Lookup</strong> in the left menu, enter a voter search, and click <strong>Search</strong>.</div></div>', unsafe_allow_html=True)
 
@@ -3821,6 +3885,32 @@ def render_voter_lookup_results():
                 ("Permanent Mail", get_lookup_value(selected_row, ["MB_PERM", "MB_Perm", "MB_Pern"])),
                 ("Mail Ballot Score", get_lookup_value(selected_row, ["MB_AProp_Score", "MMB_AProp_Score"], formatter=lambda v: normalize_numeric_string(v))),
             ])
+
+        household_df = get_lookup_household_members(selected_row)
+        st.markdown("#### Household Members")
+        if household_df.empty:
+            st.caption("No household members found.")
+        else:
+            for idx, member_row in household_df.iterrows():
+                member_name = build_lookup_full_name(member_row) or "Unnamed voter"
+                member_party = get_lookup_value(member_row, ["Party"])
+                member_age = get_lookup_value(member_row, ["Age"], formatter=lambda v: normalize_numeric_string(v))
+                member_line = member_name
+                meta_bits = [bit for bit in [member_party, member_age] if normalize_export_text(bit)]
+                if meta_bits:
+                    member_line += ", " + ", ".join(meta_bits)
+                is_selected_member = bool(member_row.get("_IsSelectedMember", False))
+                member_cols = st.columns([5, 1.4])
+                with member_cols[0]:
+                    st.markdown(f"- **{member_line}**")
+                with member_cols[1]:
+                    if is_selected_member:
+                        st.caption("Current")
+                    else:
+                        member_key = member_row.get("_LookupRowKey", "")
+                        if st.button("Open", key=f"hh_open_{member_key}_{idx}", use_container_width=True):
+                            st.session_state["lookup_selected_key"] = member_key
+                            st.rerun()
 
         render_lookup_vote_history_tables(selected_row)
 
