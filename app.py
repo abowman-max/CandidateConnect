@@ -3371,120 +3371,86 @@ def render_lookup_field_block(title: str, rows: list[tuple[str, str]]):
         st.dataframe(pd.DataFrame(clean_rows), use_container_width=True, hide_index=True)
 
 
-def render_voter_lookup_tab(active_filters, columns):
+def render_voter_lookup_results():
+    results_df = pd.DataFrame(st.session_state.get("lookup_results_records", []))
+    lookup_query = st.session_state.get("lookup_query", "")
+
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="small-header">Voter Lookup</div>', unsafe_allow_html=True)
-    st.caption("Search the full statewide active voter file by name, county, address, PA ID, phone, or email.")
+    st.caption("Showing lookup results from the full statewide active voter file.")
 
-    search_cols = st.columns([2.3, 0.9, 0.9], gap="medium")
-    with search_cols[0]:
-        lookup_query = st.text_input(
-            "Search voters",
-            value=st.session_state.get("lookup_query", ""),
-            placeholder="Example: Jane Smith Lancaster, Jane Smith 17520, PA ID, phone, or email",
-            key="lookup_query_input",
-        )
-    with search_cols[1]:
-        result_limit = st.selectbox("Max Results", [10, 25, 50, 100], index=1, key="lookup_result_limit")
-    with search_cols[2]:
-        st.markdown("")
-        search_clicked = st.button("Search", use_container_width=True, type="primary", key="lookup_search_button")
-
-    if st.button("Clear Lookup", use_container_width=False, key="lookup_clear_button"):
-        st.session_state["lookup_query"] = ""
-        st.session_state["lookup_query_input"] = ""
-        st.session_state["lookup_results_records"] = []
-        st.session_state["lookup_selected_key"] = ""
-        st.rerun()
-
-    should_search = search_clicked or (
-        lookup_query
-        and lookup_query != st.session_state.get("lookup_last_query", "")
-        and len(lookup_query.strip()) >= 2
-    )
-
-    if should_search:
-        with st.spinner("Searching voter detail shards..."):
-            results_df = search_voters_for_lookup(active_filters, lookup_query.strip(), limit=int(result_limit), use_current_filters=False)
-            st.session_state["lookup_query"] = lookup_query.strip()
-            st.session_state["lookup_last_query"] = lookup_query.strip()
-            st.session_state["lookup_results_records"] = results_df.to_dict("records")
-            st.session_state["lookup_selected_key"] = results_df.iloc[0]["_LookupRowKey"] if not results_df.empty else ""
-
-    results_df = pd.DataFrame(st.session_state.get("lookup_results_records", []))
-
-    if not lookup_query.strip():
-        st.info("Type a name, address, PA ID, phone number, or email to find a voter.")
+    if not normalize_export_text(lookup_query):
+        st.info("Open Voter Lookup in the left menu, enter a search, and click Search.")
         st.markdown('</div>', unsafe_allow_html=True)
         return
 
     if results_df.empty:
-        st.warning("No voters matched that search in the statewide active voter file.")
+        st.warning(f'No voters matched "{lookup_query}" in the statewide active voter file.')
         st.markdown('</div>', unsafe_allow_html=True)
         return
 
-    st.caption(f"{len(results_df):,} result(s) loaded")
-    left_col, right_col = st.columns([1.1, 1.9], gap="medium")
+    st.caption(f"{len(results_df):,} result(s) loaded for: {lookup_query}")
+    left_col, right_col = st.columns([1.05, 1.95], gap="medium")
 
     with left_col:
         st.markdown("#### Results")
         for _, result_row in results_df.iterrows():
             title = normalize_name_value(normalize_export_text(result_row.get("_LookupName", ""))) or "Unnamed voter"
+            age_text = normalize_numeric_string(result_row.get("Age", ""))
+            if age_text:
+                title = f"{title}, {age_text}"
             line1 = normalize_address_value(normalize_export_text(result_row.get("_LookupAddress", "")))
             line2 = normalize_export_text(result_row.get("_LookupCityStateZip", ""))
-            paid = normalize_numeric_string(result_row.get("_LookupPAID", ""))
-            label_parts = [title]
-            if line1:
-                label_parts.append(line1)
-            if line2:
-                label_parts.append(line2)
-            if paid:
-                label_parts.append(f"PA ID {paid}")
-            button_label = "\n".join(label_parts)
-            if st.button(button_label, key=f"lookup_pick_{result_row.get('_LookupRowKey', '')}", use_container_width=True):
+            county = normalize_export_text(result_row.get("County", ""))
+            card_label = "\n".join([x for x in [title, line1, line2, county] if x])
+            is_selected = st.session_state.get("lookup_selected_key", "") == result_row.get("_LookupRowKey", "")
+            button_type = "primary" if is_selected else "secondary"
+            if st.button(card_label, key=f'lookup_pick_{result_row.get("_LookupRowKey", "")}', use_container_width=True, type=button_type):
                 st.session_state["lookup_selected_key"] = result_row.get("_LookupRowKey", "")
                 st.rerun()
 
-    selected_row = get_lookup_selected_row(results_df)
-    if selected_row is None:
-        st.markdown('</div>', unsafe_allow_html=True)
-        return
+    selected_key = st.session_state.get("lookup_selected_key", "")
+    if selected_key and selected_key in set(results_df["_LookupRowKey"].tolist()):
+        selected_row = results_df.loc[results_df["_LookupRowKey"] == selected_key].iloc[0]
+    else:
+        selected_row = results_df.iloc[0]
+        st.session_state["lookup_selected_key"] = selected_row.get("_LookupRowKey", "")
 
     with right_col:
-        voter_name = build_lookup_full_name(selected_row) or normalize_name_value(normalize_export_text(selected_row.get("_LookupName", ""))) or "Voter profile"
-        st.markdown(f"### {voter_name}")
+        voter_name = normalize_name_value(normalize_export_text(selected_row.get("_LookupName", ""))) or "Unnamed voter"
+        st.markdown(f"## {voter_name}")
         address_block = build_lookup_address(selected_row)
         if address_block:
             st.markdown(address_block.replace("\n", "  \n"))
 
-        top_metrics = st.columns(4, gap="small")
-        top_metrics[0].metric("Party", get_lookup_value(selected_row, ["Party", "_PartyNorm"]) or "—")
-        top_metrics[1].metric("Gender", get_lookup_value(selected_row, ["Gender", "Sex", "_Gender"]) or "—")
-        top_metrics[2].metric("Age", get_lookup_value(selected_row, ["Age"], formatter=lambda v: normalize_numeric_string(v)) or "—")
-        top_metrics[3].metric("PA ID", get_lookup_value(selected_row, ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "State Voter ID", "Voter ID", "VoterID"], formatter=lambda v: normalize_numeric_string(v)) or "—")
+        metric_cols = st.columns(4, gap="small")
+        metric_cols[0].metric("Party", get_lookup_value(selected_row, ["Party"], formatter=lambda v: normalize_export_text(v)) or "—")
+        metric_cols[1].metric("Gender", get_lookup_value(selected_row, ["Gender", "Sex"], formatter=lambda v: normalize_export_text(v)) or "—")
+        metric_cols[2].metric("Age", get_lookup_value(selected_row, ["Age"], formatter=lambda v: normalize_numeric_string(v)) or "—")
+        metric_cols[3].metric("PA ID", get_lookup_value(selected_row, ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "VoterID"], formatter=lambda v: normalize_numeric_string(v)) or "—")
 
-        info_cols = st.columns(2, gap="medium")
-        with info_cols[0]:
+        detail_cols = st.columns(2, gap="medium")
+        with detail_cols[0]:
             render_lookup_field_block("Voter Details", [
-                ("Date of Birth", get_lookup_value(selected_row, ["DOB", "Date of Birth", "BirthDate", "Birth Date"], formatter=format_lookup_date)),
-                ("Registration Date", get_lookup_value(selected_row, ["RegistrationDate", "Registration Date", "_RegistrationDate"], formatter=format_lookup_date)),
+                ("Date of Birth", get_lookup_value(selected_row, ["DOB", "DateOfBirth", "Birth Date"], formatter=format_lookup_date)),
+                ("Registration Date", get_lookup_value(selected_row, ["RegistrationDate", "Registration Date"], formatter=format_lookup_date)),
                 ("County", get_lookup_value(selected_row, ["County"])),
                 ("Municipality", get_lookup_value(selected_row, ["Municipality"])),
                 ("Precinct", get_lookup_value(selected_row, ["Precinct"])),
-                ("Congressional", get_lookup_value(selected_row, ["USC", "Congressional District", "Congress District"])),
-                ("State Senate", get_lookup_value(selected_row, ["STS", "State Senate", "Senate District"])),
-                ("State House", get_lookup_value(selected_row, ["STH", "State House", "House District"])),
-                ("School District", get_lookup_value(selected_row, ["School District", "SchoolDistrict"])),
+                ("Congressional", get_lookup_value(selected_row, ["USC", "Congressional", "Congressional District"], formatter=lambda v: normalize_numeric_string(v))),
+                ("State Senate", get_lookup_value(selected_row, ["STS", "State Senate", "Senate District"], formatter=lambda v: normalize_numeric_string(v))),
+                ("State House", get_lookup_value(selected_row, ["STH", "State House", "House District"], formatter=lambda v: normalize_numeric_string(v))),
+                ("School District", get_lookup_value(selected_row, ["School District"])),
             ])
-        with info_cols[1]:
+        with detail_cols[1]:
             render_lookup_field_block("Contact + Mail Ballot", [
-                ("Mobile", get_lookup_value(selected_row, ["Mobile", "Cell", "CellPhone", "Cell Phone"], formatter=format_lookup_phone)),
-                ("Landline", get_lookup_value(selected_row, ["Landline", "Phone", "HomePhone", "PrimaryPhone", "Primary Phone"], formatter=format_lookup_phone)),
-                ("Email", get_lookup_value(selected_row, ["Email", "EmailAddress", "Email Address"])),
-                ("Mail Ballot Applied", get_lookup_value(selected_row, ["MIB_Applied", "_MIBApplied"])),
-                ("Mail Ballot Status", get_lookup_value(selected_row, ["MIB_BALLOT", "_MIBBallot"])),
-                ("Permanent Mail", get_lookup_value(selected_row, ["MB_PERM", "MB_Perm", "MB_Pern", "_MBPerm"])),
-                ("Mail Ballot Score", get_lookup_value(selected_row, ["MB_AProp_Score", "MMB_AProp_Score", "_MBScore"])),
+                ("Mobile", format_lookup_phone(get_lookup_value(selected_row, ["Mobile"]))),
+                ("Landline", format_lookup_phone(get_lookup_value(selected_row, ["Landline", "PrimaryPhone", "Phone"]))),
+                ("Email", get_lookup_value(selected_row, ["Email"])),
+                ("Mail Ballot Applied", get_lookup_value(selected_row, ["MIB_Applied"])),
+                ("Mail Ballot Status", get_lookup_value(selected_row, ["MIB_BALLOT"])),
+                ("Permanent Mail", get_lookup_value(selected_row, ["MB_PERM", "MB_Perm", "MB_Pern"])),
+                ("Mail Ballot Score", get_lookup_value(selected_row, ["MB_AProp_Score", "MMB_AProp_Score"], formatter=lambda v: normalize_numeric_string(v))),
             ])
 
         st.markdown("#### Vote History Summary")
@@ -3494,6 +3460,41 @@ def render_voter_lookup_tab(active_filters, columns):
         vote_cols[2].metric("Primary (V4P)", get_lookup_value(selected_row, ["V4P"], formatter=lambda v: normalize_numeric_string(v)) or "—")
 
     st.markdown('</div>', unsafe_allow_html=True)
+
+
+def render_lookup_sidebar(active_filters, columns):
+    with st.expander("Voter Lookup", expanded=False):
+        st.caption("Search the full statewide active voter file by name, county, address, PA ID, phone, or email.")
+        with st.form("lookup_form", clear_on_submit=False):
+            lookup_query = st.text_input(
+                "Search voters",
+                value=st.session_state.get("lookup_query", ""),
+                placeholder="Example: Jane Smith Lancaster, Jane Smith 17520, PA ID, phone, or email",
+                key="lookup_query_input",
+            )
+            result_limit = st.selectbox("Max Results", [10, 25, 50, 100], index=1, key="lookup_result_limit")
+            action_cols = st.columns(2, gap="small")
+            search_clicked = action_cols[0].form_submit_button("Search", use_container_width=True, type="primary")
+            clear_clicked = action_cols[1].form_submit_button("Clear Lookup", use_container_width=True)
+
+        if clear_clicked:
+            st.session_state["lookup_query"] = ""
+            st.session_state["lookup_query_input"] = ""
+            st.session_state["lookup_results_records"] = []
+            st.session_state["lookup_selected_key"] = ""
+            st.session_state["lookup_last_query"] = ""
+            st.session_state["lookup_view_active"] = False
+            st.rerun()
+
+        if search_clicked and lookup_query.strip():
+            with st.spinner("Searching voter detail shards..."):
+                results_df = search_voters_for_lookup(active_filters, lookup_query.strip(), limit=int(result_limit), use_current_filters=False)
+            st.session_state["lookup_query"] = lookup_query.strip()
+            st.session_state["lookup_last_query"] = lookup_query.strip()
+            st.session_state["lookup_results_records"] = results_df.to_dict("records")
+            st.session_state["lookup_selected_key"] = results_df.iloc[0]["_LookupRowKey"] if not results_df.empty else ""
+            st.session_state["lookup_view_active"] = True
+            st.rerun()
 
 if "data_loaded" not in st.session_state:
     st.session_state.data_loaded = False
@@ -3515,11 +3516,12 @@ if "walk_results_df" not in st.session_state:
     st.session_state.walk_results_df = pd.DataFrame(columns=["PA ID Number", "Contacted", "Result", "Support Level", "Follow-Up", "Notes"])
 if "walk_results_filters" not in st.session_state:
     st.session_state.walk_results_filters = {}
+if "lookup_view_active" not in st.session_state:
+    st.session_state.lookup_view_active = False
 
 with st.sidebar:
-    st.header("Filters")
-    st.markdown('<div class="sidebar-note">This version uses public HTTPS downloads from Cloudflare R2 instead of boto3. Make sure your R2 bucket is Public Read enabled.</div>', unsafe_allow_html=True)
-
+    st.header("Candidate Connect")
+    st.markdown('<div class="sidebar-note">Load voter data first, then open Create Universe or Voter Lookup below.</div>', unsafe_allow_html=True)
 
     if not st.session_state.data_loaded:
         if st.button("Load Voter Data", use_container_width=True, type="primary"):
@@ -3531,262 +3533,261 @@ with st.sidebar:
                 st.session_state.filters_applied = False
             st.rerun()
     else:
-        st.success("R2 index shards loaded")
-
         cols = st.session_state.columns
         opts = st.session_state.options
 
-        with st.form("filter_form", clear_on_submit=False):
-            with st.expander("Geography", expanded=False):
-                geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in cols]
-                geo_selections = {}
-                for col in geo_cols:
-                    geo_selections[col] = st.multiselect(col, opts.get(col, []), default=st.session_state.active_filters.get(col, []))
+        render_lookup_sidebar(st.session_state.active_filters, cols)
 
-            with st.expander("Voter Details", expanded=False):
-                party_pick = st.multiselect("Party", opts.get("party_vals", []), default=st.session_state.active_filters.get("party_pick", []))
-                hh_party_pick = st.multiselect("Household Party", opts.get("hh_party_vals", []), default=st.session_state.active_filters.get("hh_party_pick", [])) if "HH-Party" in cols else []
-                calc_party_pick = st.multiselect("Calculated Party", opts.get("calc_party_vals", []), default=st.session_state.active_filters.get("calc_party_pick", [])) if "CalculatedParty" in cols else []
-                gender_pick = st.multiselect("Gender", opts.get("gender_vals", []), default=st.session_state.active_filters.get("gender_pick", []))
-                age_range_pick = st.multiselect("Age Range", opts.get("age_range_vals", []), default=st.session_state.active_filters.get("age_range_pick", []))
-                age_slider = None
-                if opts.get("age_min") is not None and opts.get("age_max") is not None:
-                    age_slider = st.slider("Age", opts["age_min"], opts["age_max"], st.session_state.active_filters.get("age_slider", (opts["age_min"], opts["age_max"])))
+        with st.expander("Create Universe", expanded=False):
+            with st.form("filter_form", clear_on_submit=False):
+                with st.expander("Geography", expanded=False):
+                    geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in cols]
+                    geo_selections = {}
+                    for col in geo_cols:
+                        geo_selections[col] = st.multiselect(col, opts.get(col, []), default=st.session_state.active_filters.get(col, []))
 
-            with st.expander("Vote History", expanded=False):
-                vh_type_options = ["All", "General", "Primary"]
-                current_vh_type = st.session_state.active_filters.get("vote_history_type", "All")
-                if current_vh_type not in vh_type_options:
-                    current_vh_type = "All"
-                vote_history_type = st.selectbox(
-                    "Vote History Type",
-                    vh_type_options,
-                    index=vh_type_options.index(current_vh_type),
-                    help="All uses V4A, General uses V4G, and Primary uses V4P.",
-                )
-                current_range = st.session_state.active_filters.get("vote_history_range", (0, 4))
-                if not isinstance(current_range, (list, tuple)) or len(current_range) != 2:
-                    current_range = (0, 4)
-                vote_history_range = st.slider(
-                    "Vote History Range",
-                    min_value=0,
-                    max_value=4,
-                    value=(int(current_range[0]), int(current_range[1])),
-                    help="0-4 elections in the selected vote history field.",
-                )
+                with st.expander("Voter Details", expanded=False):
+                    party_pick = st.multiselect("Party", opts.get("party_vals", []), default=st.session_state.active_filters.get("party_pick", []))
+                    hh_party_pick = st.multiselect("Household Party", opts.get("hh_party_vals", []), default=st.session_state.active_filters.get("hh_party_pick", [])) if "HH-Party" in cols else []
+                    calc_party_pick = st.multiselect("Calculated Party", opts.get("calc_party_vals", []), default=st.session_state.active_filters.get("calc_party_pick", [])) if "CalculatedParty" in cols else []
+                    gender_pick = st.multiselect("Gender", opts.get("gender_vals", []), default=st.session_state.active_filters.get("gender_pick", []))
+                    age_range_pick = st.multiselect("Age Range", opts.get("age_range_vals", []), default=st.session_state.active_filters.get("age_range_pick", []))
+                    age_slider = None
+                    if opts.get("age_min") is not None and opts.get("age_max") is not None:
+                        age_slider = st.slider("Age", opts["age_min"], opts["age_max"], st.session_state.active_filters.get("age_slider", (opts["age_min"], opts["age_max"])))
 
-                mib_applied_pick = st.multiselect("Mail Ballot Application Status", opts.get("mib_applied_vals", []), default=st.session_state.active_filters.get("mib_applied_pick", []))
-                mib_ballot_pick = st.multiselect("Mail Ballot Vote Status", opts.get("mib_ballot_vals", []), default=st.session_state.active_filters.get("mib_ballot_pick", []))
-                mb_perm_pick = st.multiselect("MB Perm", opts.get("mb_perm_vals", []), default=st.session_state.active_filters.get("mb_perm_pick", []))
-
-                mb_score_slider = None
-                if opts.get("mb_score_min") is not None and opts.get("mb_score_max") is not None:
-                    lo = float(opts["mb_score_min"])
-                    hi = float(opts["mb_score_max"])
-                    default_score = st.session_state.active_filters.get("mb_score_slider", (lo, hi))
-                    if not isinstance(default_score, (list, tuple)) or len(default_score) != 2:
-                        default_score = (lo, hi)
-                    mb_score_slider = st.slider(
-                        "MB Probability Score",
-                        min_value=lo,
-                        max_value=hi,
-                        value=(float(default_score[0]), float(default_score[1])),
+                with st.expander("Vote History", expanded=False):
+                    vh_type_options = ["All", "General", "Primary"]
+                    current_vh_type = st.session_state.active_filters.get("vote_history_type", "All")
+                    if current_vh_type not in vh_type_options:
+                        current_vh_type = "All"
+                    vote_history_type = st.selectbox(
+                        "Vote History Type",
+                        vh_type_options,
+                        index=vh_type_options.index(current_vh_type),
+                        help="All uses V4A, General uses V4G, and Primary uses V4P.",
+                    )
+                    current_range = st.session_state.active_filters.get("vote_history_range", (0, 4))
+                    if not isinstance(current_range, (list, tuple)) or len(current_range) != 2:
+                        current_range = (0, 4)
+                    vote_history_range = st.slider(
+                        "Vote History Range",
+                        min_value=0,
+                        max_value=4,
+                        value=(int(current_range[0]), int(current_range[1])),
+                        help="0-4 elections in the selected vote history field.",
                     )
 
-                new_reg_months = st.slider(
-                    "Newly Registered (within last N months; 0 = all)",
-                    min_value=0,
-                    max_value=24,
-                    value=st.session_state.active_filters.get("new_reg_months", 0),
-                    step=1,
+                    mib_applied_pick = st.multiselect("Mail Ballot Application Status", opts.get("mib_applied_vals", []), default=st.session_state.active_filters.get("mib_applied_pick", []))
+                    mib_ballot_pick = st.multiselect("Mail Ballot Vote Status", opts.get("mib_ballot_vals", []), default=st.session_state.active_filters.get("mib_ballot_pick", []))
+                    mb_perm_pick = st.multiselect("MB Perm", opts.get("mb_perm_vals", []), default=st.session_state.active_filters.get("mb_perm_pick", []))
+
+                    mb_score_slider = None
+                    if opts.get("mb_score_min") is not None and opts.get("mb_score_max") is not None:
+                        lo = float(opts["mb_score_min"])
+                        hi = float(opts["mb_score_max"])
+                        default_score = st.session_state.active_filters.get("mb_score_slider", (lo, hi))
+                        if not isinstance(default_score, (list, tuple)) or len(default_score) != 2:
+                            default_score = (lo, hi)
+                        mb_score_slider = st.slider(
+                            "MB Probability Score",
+                            min_value=lo,
+                            max_value=hi,
+                            value=(float(default_score[0]), float(default_score[1])),
+                        )
+
+                    new_reg_months = st.slider(
+                        "Newly Registered (within last N months; 0 = all)",
+                        min_value=0,
+                        max_value=24,
+                        value=st.session_state.active_filters.get("new_reg_months", 0),
+                        step=1,
+                    )
+
+                with st.expander("Contact Filters", expanded=False):
+                    email_opts = ["All", "Has Email", "No Email"]
+                    landline_opts = ["All", "Has Landline", "No Landline"]
+                    mobile_opts = ["All", "Has Mobile", "No Mobile"]
+                    has_email = st.selectbox("Email", email_opts, index=email_opts.index(st.session_state.active_filters.get("has_email", "All")))
+                    has_landline = st.selectbox("Landline", landline_opts, index=landline_opts.index(st.session_state.active_filters.get("has_landline", "All")))
+                    has_mobile = st.selectbox("Mobile", mobile_opts, index=mobile_opts.index(st.session_state.active_filters.get("has_mobile", "All")))
+
+                with st.expander("Smart Follow-Up", expanded=False):
+                    contact_status_opts = ["All", "Not Contacted", "Contacted"]
+                    global_yes_no_opts = ["All", "Yes", "No"]
+                    support_level_opts = get_global_support_level_options()
+
+                    contact_status = st.selectbox(
+                        "Contact Status",
+                        contact_status_opts,
+                        index=contact_status_opts.index(st.session_state.active_filters.get("contact_status", "All")),
+                        help="Uses uploaded candidate Street List and Walk Sheet results.",
+                    )
+                    global_nh = st.selectbox(
+                        "Not Home",
+                        global_yes_no_opts,
+                        index=global_yes_no_opts.index(st.session_state.active_filters.get("global_nh", "All")),
+                    )
+                    global_follow_up = st.selectbox(
+                        "Follow-Up",
+                        global_yes_no_opts,
+                        index=global_yes_no_opts.index(st.session_state.active_filters.get("global_follow_up", "All")),
+                    )
+                    current_support = st.session_state.active_filters.get("global_support_level", "All")
+                    if current_support not in support_level_opts:
+                        current_support = "All"
+                    global_support_level = st.selectbox(
+                        "Support Level",
+                        support_level_opts,
+                        index=support_level_opts.index(current_support),
+                    )
+                    st.caption("These filters use uploaded Street List and Walk Sheet tracking data across exports, reports, and turf packets.")
+
+                st.caption("Counts stay at zero until you click Apply Filters.")
+                cols2 = st.columns(2)
+                apply_filters = cols2[0].form_submit_button("Apply Filters", use_container_width=True, type="primary")
+                clear_filters = cols2[1].form_submit_button("Clear Filters", use_container_width=True)
+
+            if clear_filters:
+                st.session_state.active_filters = {}
+                st.session_state.filters_applied = False
+                st.rerun()
+
+            if apply_filters:
+                st.session_state.active_filters = {
+                    **geo_selections,
+                    "party_pick": party_pick,
+                    "hh_party_pick": hh_party_pick,
+                    "calc_party_pick": calc_party_pick,
+                    "gender_pick": gender_pick,
+                    "age_range_pick": age_range_pick,
+                    "age_slider": age_slider,
+                    "vote_history_type": vote_history_type,
+                    "vote_history_range": vote_history_range,
+                    "mib_applied_pick": mib_applied_pick,
+                    "mib_ballot_pick": mib_ballot_pick,
+                    "mb_perm_pick": mb_perm_pick,
+                    "mb_score_slider": mb_score_slider,
+                    "new_reg_months": new_reg_months,
+                    "has_email": has_email,
+                    "has_landline": has_landline,
+                    "has_mobile": has_mobile,
+                    "contact_status": contact_status,
+                    "global_nh": global_nh,
+                    "global_follow_up": global_follow_up,
+                    "global_support_level": global_support_level,
+                }
+                st.session_state.filters_applied = True
+                st.rerun()
+            divider()
+            with st.expander("⚡ Quick Select Campaign Lists", expanded=False):
+                st.caption("These buttons keep your existing geography and voter filters, but quickly set the Smart Follow-Up filters.")
+                qs_row1 = st.columns(2, gap="small")
+                with qs_row1[0]:
+                    if st.button("Re-Knock List", use_container_width=True, key="qs_reknock"):
+                        apply_followup_preset("Re-Knock List")
+                with qs_row1[1]:
+                    if st.button("Follow-Up List", use_container_width=True, key="qs_followup"):
+                        apply_followup_preset("Follow-Up List")
+
+                qs_row2 = st.columns(2, gap="small")
+                with qs_row2[0]:
+                    if st.button("GOTV Supporters", use_container_width=True, key="qs_gotv"):
+                        apply_followup_preset("GOTV Supporters")
+                with qs_row2[1]:
+                    if st.button("Undecided Persuasion", use_container_width=True, key="qs_undecided"):
+                        apply_followup_preset("Undecided Persuasion")
+
+                qs_row3 = st.columns(2, gap="small")
+                with qs_row3[0]:
+                    if st.button("Yard Sign Follow-Up", use_container_width=True, key="qs_yardsign"):
+                        apply_followup_preset("Yard Sign Follow-Up")
+                with qs_row3[1]:
+                    if st.button("Clear Quick Select", use_container_width=True, key="qs_clear"):
+                        apply_followup_preset("Clear")
+
+            with st.expander("💾 Saved Universes", expanded=False):
+                store_label = get_saved_universe_store_label()
+                if store_label == "Cloudflare R2":
+                    st.caption("Saved universes are stored in persistent Cloudflare R2 storage.")
+                else:
+                    st.caption("Saved universes are using local fallback storage. Add R2 write secrets to keep them across restarts.")
+
+                saved_universes = load_saved_universes()
+                st.session_state["saved_universes"] = saved_universes
+                universe_names = list(saved_universes.keys())
+
+                if universe_names:
+                    selected_sidebar_universe = st.selectbox(
+                        "Saved Universes",
+                        universe_names,
+                        key="sidebar_saved_universe_name",
+                    )
+                    universe_info = saved_universes[selected_sidebar_universe]
+                    st.caption(
+                        f"Saved: {universe_info.get('saved_at', '')} | Count: {int(universe_info.get('count', 0)):,}"
+                    )
+                    st.caption(universe_info.get("summary", "No filters"))
+                    load_col, delete_col = st.columns(2, gap="small")
+                    with load_col:
+                        if st.button("Load Universe", use_container_width=True, key="load_sidebar_universe"):
+                            st.session_state.active_filters = universe_info.get("filters", {})
+                            st.session_state.filters_applied = False
+                            st.success(f"Loaded universe: {selected_sidebar_universe}")
+                            st.rerun()
+                    with delete_col:
+                        if st.button("Delete Universe", use_container_width=True, key="delete_sidebar_universe"):
+                            saved_universes.pop(selected_sidebar_universe, None)
+                            save_saved_universes(saved_universes)
+                            st.session_state["saved_universes"] = saved_universes
+                            st.success(f"Deleted universe: {selected_sidebar_universe}")
+                            st.rerun()
+                else:
+                    st.caption("No saved universes yet.")
+
+                save_name = st.text_input(
+                    "Save current filters as",
+                    key="save_universe_name_sidebar",
+                    placeholder="Example: GOTV Democrats Week 1",
                 )
-
-            with st.expander("Contact Filters", expanded=False):
-                email_opts = ["All", "Has Email", "No Email"]
-                landline_opts = ["All", "Has Landline", "No Landline"]
-                mobile_opts = ["All", "Has Mobile", "No Mobile"]
-                has_email = st.selectbox("Email", email_opts, index=email_opts.index(st.session_state.active_filters.get("has_email", "All")))
-                has_landline = st.selectbox("Landline", landline_opts, index=landline_opts.index(st.session_state.active_filters.get("has_landline", "All")))
-                has_mobile = st.selectbox("Mobile", mobile_opts, index=mobile_opts.index(st.session_state.active_filters.get("has_mobile", "All")))
-
-            with st.expander("Smart Follow-Up", expanded=False):
-                contact_status_opts = ["All", "Not Contacted", "Contacted"]
-                global_yes_no_opts = ["All", "Yes", "No"]
-                support_level_opts = get_global_support_level_options()
-
-                contact_status = st.selectbox(
-                    "Contact Status",
-                    contact_status_opts,
-                    index=contact_status_opts.index(st.session_state.active_filters.get("contact_status", "All")),
-                    help="Uses uploaded candidate Street List and Walk Sheet results.",
-                )
-                global_nh = st.selectbox(
-                    "Not Home",
-                    global_yes_no_opts,
-                    index=global_yes_no_opts.index(st.session_state.active_filters.get("global_nh", "All")),
-                )
-                global_follow_up = st.selectbox(
-                    "Follow-Up",
-                    global_yes_no_opts,
-                    index=global_yes_no_opts.index(st.session_state.active_filters.get("global_follow_up", "All")),
-                )
-                current_support = st.session_state.active_filters.get("global_support_level", "All")
-                if current_support not in support_level_opts:
-                    current_support = "All"
-                global_support_level = st.selectbox(
-                    "Support Level",
-                    support_level_opts,
-                    index=support_level_opts.index(current_support),
-                )
-                st.caption("These filters use uploaded Street List and Walk Sheet tracking data across exports, reports, and turf packets.")
-
-            st.caption("Counts stay at zero until you click Apply Filters.")
-            cols2 = st.columns(2)
-            apply_filters = cols2[0].form_submit_button("Apply Filters", use_container_width=True, type="primary")
-            clear_filters = cols2[1].form_submit_button("Clear Filters", use_container_width=True)
-
-        if clear_filters:
-            st.session_state.active_filters = {}
-            st.session_state.filters_applied = False
-            st.rerun()
-
-        if apply_filters:
-            st.session_state.active_filters = {
-                **geo_selections,
-                "party_pick": party_pick,
-                "hh_party_pick": hh_party_pick,
-                "calc_party_pick": calc_party_pick,
-                "gender_pick": gender_pick,
-                "age_range_pick": age_range_pick,
-                "age_slider": age_slider,
-                "vote_history_type": vote_history_type,
-                "vote_history_range": vote_history_range,
-                "mib_applied_pick": mib_applied_pick,
-                "mib_ballot_pick": mib_ballot_pick,
-                "mb_perm_pick": mb_perm_pick,
-                "mb_score_slider": mb_score_slider,
-                "new_reg_months": new_reg_months,
-                "has_email": has_email,
-                "has_landline": has_landline,
-                "has_mobile": has_mobile,
-                "contact_status": contact_status,
-                "global_nh": global_nh,
-                "global_follow_up": global_follow_up,
-                "global_support_level": global_support_level,
-            }
-            st.session_state.filters_applied = True
-            st.rerun()
-
-        divider()
-        with st.expander("⚡ Quick Select Campaign Lists", expanded=False):
-            st.caption("These buttons keep your existing geography and voter filters, but quickly set the Smart Follow-Up filters.")
-            qs_row1 = st.columns(2, gap="small")
-            with qs_row1[0]:
-                if st.button("Re-Knock List", use_container_width=True, key="qs_reknock"):
-                    apply_followup_preset("Re-Knock List")
-            with qs_row1[1]:
-                if st.button("Follow-Up List", use_container_width=True, key="qs_followup"):
-                    apply_followup_preset("Follow-Up List")
-
-            qs_row2 = st.columns(2, gap="small")
-            with qs_row2[0]:
-                if st.button("GOTV Supporters", use_container_width=True, key="qs_gotv"):
-                    apply_followup_preset("GOTV Supporters")
-            with qs_row2[1]:
-                if st.button("Undecided Persuasion", use_container_width=True, key="qs_undecided"):
-                    apply_followup_preset("Undecided Persuasion")
-
-            qs_row3 = st.columns(2, gap="small")
-            with qs_row3[0]:
-                if st.button("Yard Sign Follow-Up", use_container_width=True, key="qs_yardsign"):
-                    apply_followup_preset("Yard Sign Follow-Up")
-            with qs_row3[1]:
-                if st.button("Clear Quick Select", use_container_width=True, key="qs_clear"):
-                    apply_followup_preset("Clear")
-
-        with st.expander("💾 Saved Universes", expanded=False):
-            store_label = get_saved_universe_store_label()
-            if store_label == "Cloudflare R2":
-                st.caption("Saved universes are stored in persistent Cloudflare R2 storage.")
-            else:
-                st.caption("Saved universes are using local fallback storage. Add R2 write secrets to keep them across restarts.")
-
-            saved_universes = load_saved_universes()
-            st.session_state["saved_universes"] = saved_universes
-            universe_names = list(saved_universes.keys())
-
-            if universe_names:
-                selected_sidebar_universe = st.selectbox(
-                    "Saved Universes",
-                    universe_names,
-                    key="sidebar_saved_universe_name",
-                )
-                universe_info = saved_universes[selected_sidebar_universe]
-                st.caption(
-                    f"Saved: {universe_info.get('saved_at', '')} | Count: {int(universe_info.get('count', 0)):,}"
-                )
-                st.caption(universe_info.get("summary", "No filters"))
-                load_col, delete_col = st.columns(2, gap="small")
-                with load_col:
-                    if st.button("Load Universe", use_container_width=True, key="load_sidebar_universe"):
-                        st.session_state.active_filters = universe_info.get("filters", {})
-                        st.session_state.filters_applied = False
-                        st.success(f"Loaded universe: {selected_sidebar_universe}")
-                        st.rerun()
-                with delete_col:
-                    if st.button("Delete Universe", use_container_width=True, key="delete_sidebar_universe"):
-                        saved_universes.pop(selected_sidebar_universe, None)
+                if st.button("Save Current Universe", use_container_width=True, key="save_sidebar_universe"):
+                    universe_name = save_name.strip()
+                    if universe_name:
+                        current_filters = st.session_state.get("active_filters", {})
+                        saved_universes = load_saved_universes()
+                        saved_universes[universe_name] = {
+                            "filters": current_filters,
+                            "saved_at": datetime.now().strftime("%Y-%m-%d %I:%M %p"),
+                            "count": int(query_metrics(current_filters, st.session_state.get("columns", [])).get("voters", 0)),
+                            "summary": summarize_universe_filters(current_filters),
+                        }
                         save_saved_universes(saved_universes)
                         st.session_state["saved_universes"] = saved_universes
-                        st.success(f"Deleted universe: {selected_sidebar_universe}")
+                        st.success(f"Saved universe: {universe_name}")
                         st.rerun()
-            else:
-                st.caption("No saved universes yet.")
-
-            save_name = st.text_input(
-                "Save current filters as",
-                key="save_universe_name_sidebar",
-                placeholder="Example: GOTV Democrats Week 1",
-            )
-            if st.button("Save Current Universe", use_container_width=True, key="save_sidebar_universe"):
-                universe_name = save_name.strip()
-                if universe_name:
-                    current_filters = st.session_state.get("active_filters", {})
-                    saved_universes = load_saved_universes()
-                    saved_universes[universe_name] = {
-                        "filters": current_filters,
-                        "saved_at": datetime.now().strftime("%Y-%m-%d %I:%M %p"),
-                        "count": int(query_metrics(current_filters, st.session_state.get("columns", [])).get("voters", 0)),
-                        "summary": summarize_universe_filters(current_filters),
-                    }
-                    save_saved_universes(saved_universes)
-                    st.session_state["saved_universes"] = saved_universes
-                    st.success(f"Saved universe: {universe_name}")
-                    st.rerun()
-                else:
-                    st.warning("Enter a universe name first.")
+                    else:
+                        st.warning("Enter a universe name first.")
 
 
-if not st.session_state.data_loaded:
-    zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Mobiles", "0"), ("Unique Precincts", "0")]
-    metric_cols = st.columns(5, gap="small")
-    for col, (label, value) in zip(metric_cols, zeros):
-        with col:
-            st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
-    divider()
-    st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to load</div><div class="tiny-muted">Click <strong>Load Voter Data</strong> in the sidebar to open the R2 index shards with DuckDB.</div></div>', unsafe_allow_html=True)
-    st.stop()
+    if not st.session_state.data_loaded:
+        zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Mobiles", "0"), ("Unique Precincts", "0")]
+        metric_cols = st.columns(5, gap="small")
+        for col, (label, value) in zip(metric_cols, zeros):
+            with col:
+                st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
+        divider()
+        st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to load</div><div class="tiny-muted">Click <strong>Load Voter Data</strong> in the sidebar to open the R2 index shards with DuckDB.</div></div>', unsafe_allow_html=True)
+        st.stop()
 
-if not st.session_state.filters_applied:
-    zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Mobiles", "0"), ("Unique Precincts", "0")]
-    metric_cols = st.columns(5, gap="small")
-    for col, (label, value) in zip(metric_cols, zeros):
-        with col:
-            st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
-    divider()
-    st.markdown('<div class="section-card empty-shell"><div class="small-header">Filters are loaded</div><div class="tiny-muted">Choose your filters in the sidebar and click <strong>Apply Filters</strong> to run counts and charts.</div></div>', unsafe_allow_html=True)
-    st.stop()
-
+    if not st.session_state.filters_applied:
+        zeros = [("Voters", "0"), ("Households", "0"), ("Emails", "0"), ("Mobiles", "0"), ("Unique Precincts", "0")]
+        metric_cols = st.columns(5, gap="small")
+        for col, (label, value) in zip(metric_cols, zeros):
+            with col:
+                st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
+        divider()
+        st.markdown('<div class="section-card empty-shell"><div class="small-header">Filters are loaded</div><div class="tiny-muted">Choose your filters in the sidebar and click <strong>Apply Filters</strong> to run counts and charts.</div></div>', unsafe_allow_html=True)
+        st.stop()
 active = st.session_state.active_filters
 columns = st.session_state.columns
 
@@ -3818,576 +3819,573 @@ for col, (label, value) in zip(metric_cols, metric_values):
     with col:
         st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
 
-campaign_cols = st.columns(4, gap="small")
-campaign_values = [
-    ("Contacted", f"{safe_int(followup_stats.get('contacted_pct'))}%", f"{safe_int(followup_stats.get('contacted_count')):,} voters"),
-    ("Not Home", f"{safe_int(followup_stats.get('nh_pct'))}%", f"{safe_int(followup_stats.get('nh_count')):,} voters"),
-    ("Follow-Up", f"{safe_int(followup_stats.get('followup_pct'))}%", f"{safe_int(followup_stats.get('followup_count')):,} voters"),
-    ("Undecided", f"{safe_int(followup_stats.get('undecided_pct'))}%", f"{safe_int(followup_stats.get('undecided_count')):,} voters"),
-]
-for col, (label, value, subvalue) in zip(campaign_cols, campaign_values):
-    with col:
-        st.markdown(
-            f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div><div class="tiny-muted">{subvalue}</div></div>',
-            unsafe_allow_html=True
-        )
+if st.session_state.get("lookup_view_active", False):
+    render_voter_lookup_results()
+else:
+    campaign_cols = st.columns(4, gap="small")
+    campaign_values = [
+        ("Contacted", f"{safe_int(followup_stats.get('contacted_pct'))}%", f"{safe_int(followup_stats.get('contacted_count')):,} voters"),
+        ("Not Home", f"{safe_int(followup_stats.get('nh_pct'))}%", f"{safe_int(followup_stats.get('nh_count')):,} voters"),
+        ("Follow-Up", f"{safe_int(followup_stats.get('followup_pct'))}%", f"{safe_int(followup_stats.get('followup_count')):,} voters"),
+        ("Undecided", f"{safe_int(followup_stats.get('undecided_pct'))}%", f"{safe_int(followup_stats.get('undecided_count')):,} voters"),
+    ]
+    for col, (label, value, subvalue) in zip(campaign_cols, campaign_values):
+        with col:
+            st.markdown(
+                f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div><div class="tiny-muted">{subvalue}</div></div>',
+                unsafe_allow_html=True
+            )
 
-divider()
+    divider()
 
-if large_filter_mode:
-    st.warning("Large statewide filter detected. To keep the app stable, some detail-heavy tracking calculations are temporarily simplified until you narrow the universe.")
-
-dashboard_tabs = st.tabs(["Overview", "Contact Tracking", "Output Center", "Voter Lookup"])
-
-with dashboard_tabs[0]:
     if large_filter_mode:
-        st.info("Summary-only mode is active for this large statewide filter. Narrow by county, municipality, or precinct to restore charts and grouped tables.")
-        summary_only_df = pd.DataFrame([
-            {"Metric": "Voters", "Value": f"{safe_int(metrics.get('voters')):,}"},
-            {"Metric": "Households", "Value": f"{safe_int(metrics.get('households')):,}"},
-            {"Metric": "Emails", "Value": f"{safe_int(metrics.get('emails')):,}"},
-            {"Metric": "Mobiles", "Value": f"{safe_int(metrics.get('mobiles')):,}"},
-            {"Metric": "Unique Precincts", "Value": f"{safe_int(metrics.get('unique_precincts')):,}"},
-        ])
-        st.dataframe(summary_only_df, use_container_width=True, hide_index=True)
-    else:
-        chart_cols = st.columns(3, gap="medium")
-        with chart_cols[0]:
-            st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-            pie_chart_with_table(party_df, "Party", "Count", "Party Breakdown", "party")
-            st.markdown('</div>', unsafe_allow_html=True)
-        with chart_cols[1]:
-            st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-            pie_chart_with_table(gender_df, "Gender", "Count", "Gender Breakdown", "gender")
-            st.markdown('</div>', unsafe_allow_html=True)
-        with chart_cols[2]:
-            st.markdown('<div class="chart-card">', unsafe_allow_html=True)
-            pie_chart_with_table(age_df, "Age Range", "Count", "Age Range Breakdown", "age")
-            st.markdown('</div>', unsafe_allow_html=True)
+        st.warning("Large statewide filter detected. To keep the app stable, some detail-heavy tracking calculations are temporarily simplified until you narrow the universe.")
 
-        divider()
+    dashboard_tabs = st.tabs(["Overview", "Contact Tracking", "Output Center"])
 
-        st.markdown('<div class="table-card">', unsafe_allow_html=True)
-        st.markdown('<div class="small-header">Counts by Area</div>', unsafe_allow_html=True)
-        if area_choices:
-            selected_area = st.selectbox("Area", area_choices, label_visibility="collapsed", key="overview_area_group")
-            area_df = query_area_summary(active, columns, selected_area).copy()
-            area_df["Individuals"] = pd.to_numeric(area_df["Individuals"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
-            area_df["Households"] = pd.to_numeric(area_df["Households"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
-            st.dataframe(area_df, use_container_width=True, hide_index=True)
+    with dashboard_tabs[0]:
+        if large_filter_mode:
+            st.info("Summary-only mode is active for this large statewide filter. Narrow by county, municipality, or precinct to restore charts and grouped tables.")
+            summary_only_df = pd.DataFrame([
+                {"Metric": "Voters", "Value": f"{safe_int(metrics.get('voters')):,}"},
+                {"Metric": "Households", "Value": f"{safe_int(metrics.get('households')):,}"},
+                {"Metric": "Emails", "Value": f"{safe_int(metrics.get('emails')):,}"},
+                {"Metric": "Mobiles", "Value": f"{safe_int(metrics.get('mobiles')):,}"},
+                {"Metric": "Unique Precincts", "Value": f"{safe_int(metrics.get('unique_precincts')):,}"},
+            ])
+            st.dataframe(summary_only_df, use_container_width=True, hide_index=True)
         else:
-            st.caption("No area fields available.")
-        st.markdown('</div>', unsafe_allow_html=True)
+            chart_cols = st.columns(3, gap="medium")
+            with chart_cols[0]:
+                st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+                pie_chart_with_table(party_df, "Party", "Count", "Party Breakdown", "party")
+                st.markdown('</div>', unsafe_allow_html=True)
+            with chart_cols[1]:
+                st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+                pie_chart_with_table(gender_df, "Gender", "Count", "Gender Breakdown", "gender")
+                st.markdown('</div>', unsafe_allow_html=True)
+            with chart_cols[2]:
+                st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+                pie_chart_with_table(age_df, "Age Range", "Count", "Age Range Breakdown", "age")
+                st.markdown('</div>', unsafe_allow_html=True)
 
-with dashboard_tabs[1]:
-    if large_filter_mode:
-        st.info("Summary-only mode is active for this large statewide filter. Narrow by county, municipality, or precinct to load Contact Tracking details.")
-    else:
-        tracking_cols = st.columns(2, gap="medium")
-        with tracking_cols[0]:
+            divider()
+
             st.markdown('<div class="table-card">', unsafe_allow_html=True)
-            st.markdown('<div class="small-header">Contact Tracking</div>', unsafe_allow_html=True)
-            tracking_summary_df = pd.DataFrame([
-                {"Metric": "Contacted", "Percent": f"{safe_int(followup_stats.get('contacted_pct'))}%", "Voters": f"{safe_int(followup_stats.get('contacted_count')):,}"},
-                {"Metric": "Not Home", "Percent": f"{safe_int(followup_stats.get('nh_pct'))}%", "Voters": f"{safe_int(followup_stats.get('nh_count')):,}"},
-                {"Metric": "Follow-Up", "Percent": f"{safe_int(followup_stats.get('followup_pct'))}%", "Voters": f"{safe_int(followup_stats.get('followup_count')):,}"},
-            ])
-            st.dataframe(tracking_summary_df, use_container_width=True, hide_index=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-        with tracking_cols[1]:
-            st.markdown('<div class="table-card">', unsafe_allow_html=True)
-            st.markdown('<div class="small-header">Support Snapshot</div>', unsafe_allow_html=True)
-            support_summary_df = pd.DataFrame([
-                {"Metric": "Strong Support", "Percent": f"{safe_int(followup_stats.get('strong_pct'))}%", "Voters": f"{safe_int(followup_stats.get('strong_count')):,}"},
-                {"Metric": "Undecided", "Percent": f"{safe_int(followup_stats.get('undecided_pct'))}%", "Voters": f"{safe_int(followup_stats.get('undecided_count')):,}"},
-            ])
-            st.dataframe(support_summary_df, use_container_width=True, hide_index=True)
+            st.markdown('<div class="small-header">Counts by Area</div>', unsafe_allow_html=True)
+            if area_choices:
+                selected_area = st.selectbox("Area", area_choices, label_visibility="collapsed", key="overview_area_group")
+                area_df = query_area_summary(active, columns, selected_area).copy()
+                area_df["Individuals"] = pd.to_numeric(area_df["Individuals"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
+                area_df["Households"] = pd.to_numeric(area_df["Households"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
+                st.dataframe(area_df, use_container_width=True, hide_index=True)
+            else:
+                st.caption("No area fields available.")
             st.markdown('</div>', unsafe_allow_html=True)
 
-with dashboard_tabs[2]:
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.markdown('<div class="small-header">Output Center</div>', unsafe_allow_html=True)
+    with dashboard_tabs[1]:
+        if large_filter_mode:
+            st.info("Summary-only mode is active for this large statewide filter. Narrow by county, municipality, or precinct to load Contact Tracking details.")
+        else:
+            tracking_cols = st.columns(2, gap="medium")
+            with tracking_cols[0]:
+                st.markdown('<div class="table-card">', unsafe_allow_html=True)
+                st.markdown('<div class="small-header">Contact Tracking</div>', unsafe_allow_html=True)
+                tracking_summary_df = pd.DataFrame([
+                    {"Metric": "Contacted", "Percent": f"{safe_int(followup_stats.get('contacted_pct'))}%", "Voters": f"{safe_int(followup_stats.get('contacted_count')):,}"},
+                    {"Metric": "Not Home", "Percent": f"{safe_int(followup_stats.get('nh_pct'))}%", "Voters": f"{safe_int(followup_stats.get('nh_count')):,}"},
+                    {"Metric": "Follow-Up", "Percent": f"{safe_int(followup_stats.get('followup_pct'))}%", "Voters": f"{safe_int(followup_stats.get('followup_count')):,}"},
+                ])
+                st.dataframe(tracking_summary_df, use_container_width=True, hide_index=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+            with tracking_cols[1]:
+                st.markdown('<div class="table-card">', unsafe_allow_html=True)
+                st.markdown('<div class="small-header">Support Snapshot</div>', unsafe_allow_html=True)
+                support_summary_df = pd.DataFrame([
+                    {"Metric": "Strong Support", "Percent": f"{safe_int(followup_stats.get('strong_pct'))}%", "Voters": f"{safe_int(followup_stats.get('strong_count')):,}"},
+                    {"Metric": "Undecided", "Percent": f"{safe_int(followup_stats.get('undecided_pct'))}%", "Voters": f"{safe_int(followup_stats.get('undecided_count')):,}"},
+                ])
+                st.dataframe(support_summary_df, use_container_width=True, hide_index=True)
+                st.markdown('</div>', unsafe_allow_html=True)
 
-    if large_filter_mode:
-        st.warning("Large statewide universe detected. Interactive outputs are paused here to keep the app stable. Use the statewide summary report below, or narrow geography to restore the normal Output Center.")
-        if st.button("Prepare Statewide Summary Report", use_container_width=True):
-            with st.spinner("Building statewide summary report..."):
-                st.session_state["statewide_summary_report_bytes"] = build_statewide_summary_report_bytes(active, columns)
-        if "statewide_summary_report_bytes" in st.session_state and st.session_state["statewide_summary_report_bytes"]:
-            st.download_button(
-                "Download Statewide Summary Report",
-                data=st.session_state["statewide_summary_report_bytes"],
-                file_name="candidate_connect_statewide_summary_report.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-        st.caption("This workbook includes Overview, Filters, County, USC, STS, and STH sheets for the current universe.")
-    else:
-        output_tabs = st.tabs(["Exports", "Reports", "Turf Builder"])
-        with output_tabs[0]:
-            st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
-            st.caption("CSV files are only built when you click the button for that export type.")
-    
-            mail_mode = st.radio(
-                "Mailing Mode",
-                ["Not Householded", "Householded"],
-                horizontal=True,
-                key="mail_mode_radio",
-            )
-    
-            exp_cols = st.columns(3, gap="medium")
-    
-            with exp_cols[0]:
-                if st.button("Prepare Filtered CSV", use_container_width=True):
-                    with st.spinner("Building filtered CSV from detail shards..."):
-                        export_df = build_filtered_csv_export(active)
-                        st.session_state["filtered_export_df"] = export_df
-                if "filtered_export_df" in st.session_state:
-                    st.download_button(
-                        "Download Filtered CSV",
-                        data=dataframe_to_csv_bytes(st.session_state["filtered_export_df"]),
-                        file_name="candidate_connect_filtered.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                    )
-    
-            with exp_cols[1]:
-                if st.button("Prepare Texting CSV", use_container_width=True):
-                    with st.spinner("Building texting CSV from detail shards..."):
-                        export_df = build_texting_export(active)
-                        st.session_state["texting_export_df"] = export_df
-                if "texting_export_df" in st.session_state:
-                    st.download_button(
-                        "Download Texting CSV",
-                        data=dataframe_to_csv_bytes(st.session_state["texting_export_df"]),
-                        file_name="candidate_connect_texting.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                    )
-    
-            with exp_cols[2]:
-                if st.button("Prepare Mail CSV", use_container_width=True):
-                    with st.spinner("Building mail CSV from detail shards..."):
-                        export_df = build_mail_export(active, householded=(mail_mode == "Householded"))
-                        st.session_state["mail_export_df"] = export_df
-                        st.session_state["mail_export_mode"] = mail_mode
-                if "mail_export_df" in st.session_state:
-                    suffix = "householded" if st.session_state.get("mail_export_mode") == "Householded" else "individual"
-                    st.download_button(
-                        "Download Mail CSV",
-                        data=dataframe_to_csv_bytes(st.session_state["mail_export_df"]),
-                        file_name=f"candidate_connect_mail_{suffix}.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                    )
-    
-        with output_tabs[1]:
-            st.markdown('<div class="small-header">Reports</div>', unsafe_allow_html=True)
-            st.caption("Prepare PDFs only when needed to keep the app responsive.")
-    
-            report_sections = st.tabs(["Summary", "Street List", "Walk Sheet", "Mailing Labels"])
-    
-            with report_sections[0]:
-                st.caption("Builds a clean PDF summary of the current filtered universe with overview counts, selected filters, and party/gender/age breakdowns.")
-                summary_cols = st.columns(2, gap="medium")
-                with summary_cols[0]:
-                    if st.button("Prepare Summary Report PDF", use_container_width=True):
-                        with st.spinner("Building Summary Report PDF from current filtered universe..."):
-                            pdf_bytes = generate_summary_report_pdf_bytes(active, cols)
-                            st.session_state["summary_report_pdf_bytes"] = pdf_bytes
-                with summary_cols[1]:
-                    if "summary_report_pdf_bytes" in st.session_state and st.session_state["summary_report_pdf_bytes"]:
+    with dashboard_tabs[2]:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown('<div class="small-header">Output Center</div>', unsafe_allow_html=True)
+
+        if large_filter_mode:
+            st.warning("Large statewide universe detected. Interactive outputs are paused here to keep the app stable. Use the statewide summary report below, or narrow geography to restore the normal Output Center.")
+            if st.button("Prepare Statewide Summary Report", use_container_width=True):
+                with st.spinner("Building statewide summary report..."):
+                    st.session_state["statewide_summary_report_bytes"] = build_statewide_summary_report_bytes(active, columns)
+            if "statewide_summary_report_bytes" in st.session_state and st.session_state["statewide_summary_report_bytes"]:
+                st.download_button(
+                    "Download Statewide Summary Report",
+                    data=st.session_state["statewide_summary_report_bytes"],
+                    file_name="candidate_connect_statewide_summary_report.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+            st.caption("This workbook includes Overview, Filters, County, USC, STS, and STH sheets for the current universe.")
+        else:
+            output_tabs = st.tabs(["Exports", "Reports", "Turf Builder"])
+            with output_tabs[0]:
+                st.markdown('<div class="small-header">Exports</div>', unsafe_allow_html=True)
+                st.caption("CSV files are only built when you click the button for that export type.")
+        
+                mail_mode = st.radio(
+                    "Mailing Mode",
+                    ["Not Householded", "Householded"],
+                    horizontal=True,
+                    key="mail_mode_radio",
+                )
+        
+                exp_cols = st.columns(3, gap="medium")
+        
+                with exp_cols[0]:
+                    if st.button("Prepare Filtered CSV", use_container_width=True):
+                        with st.spinner("Building filtered CSV from detail shards..."):
+                            export_df = build_filtered_csv_export(active)
+                            st.session_state["filtered_export_df"] = export_df
+                    if "filtered_export_df" in st.session_state:
                         st.download_button(
-                            "Download Summary Report PDF",
-                            data=st.session_state["summary_report_pdf_bytes"],
-                            file_name="candidate_connect_summary_report.pdf",
-                            mime="application/pdf",
+                            "Download Filtered CSV",
+                            data=dataframe_to_csv_bytes(st.session_state["filtered_export_df"]),
+                            file_name="candidate_connect_filtered.csv",
+                            mime="text/csv",
                             use_container_width=True,
                         )
-    
-            with report_sections[1]:
-                st.caption("Builds a compact precinct-grouped PDF and also supports a Street List Excel tracking sheet so the same list can be used to record F, A, U, NH, and Yard Sign results.")
-                upload_cols = st.columns([1, 1.2, 1], gap="medium")
-                with upload_cols[0]:
-                    st.download_button(
-                        "Download Street Results CSV Template",
-                        data=get_street_results_template_csv_bytes(),
-                        file_name="candidate_connect_street_results_template.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                    )
-                    st.download_button(
-                        "Download Street List Excel Tracking Sheet",
-                        data=get_street_results_sheet_bytes(active),
-                        file_name="candidate_connect_street_list_tracking.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
-                with upload_cols[1]:
-                    uploaded_results_file = st.file_uploader(
-                        "Upload Street Results File",
-                        type=["csv", "xlsx"],
-                        key="street_results_upload",
-                        help="Upload either the Street List Excel tracking sheet or a CSV using PA ID Number plus F, A, U, NH, and Yard Sign columns.",
-                    )
-                    if uploaded_results_file is not None:
-                        upload_sig = f"{uploaded_results_file.name}:{getattr(uploaded_results_file, 'size', 0)}"
-                        if st.session_state.get("street_results_upload_sig") != upload_sig:
-                            try:
-                                if str(uploaded_results_file.name).lower().endswith(".xlsx"):
-                                    raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str).fillna("")
-                                    normalized_cols = [re.sub(r"[^a-z0-9]+", "", str(c).strip().lower()) for c in raw_upload_df.columns]
-                                    if "paidnumber" not in normalized_cols:
-                                        try:
-                                            raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str, header=4).fillna("")
-                                        except Exception:
-                                            uploaded_results_file.seek(0)
-                                            raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str).fillna("")
-                                    uploaded_results_file.seek(0)
-                                else:
-                                    raw_upload_df = pd.read_csv(uploaded_results_file, dtype=str).fillna("")
-                                standardized_upload_df = standardize_uploaded_street_results(raw_upload_df)
-                                if standardized_upload_df.empty:
-                                    st.warning("No usable PA ID Number column was found in the uploaded file.")
-                                else:
-                                    st.session_state["street_results_df"] = standardized_upload_df
-                                    st.session_state["street_results_upload_sig"] = upload_sig
-                                    st.session_state["street_results_upload_name"] = uploaded_results_file.name
-                                    st.success(f"Loaded {len(standardized_upload_df):,} street-result rows.")
-                            except Exception as exc:
-                                st.error(f"Could not read the street results file: {exc}")
-                with upload_cols[2]:
-                    loaded_results = st.session_state.get("street_results_df")
-                    if isinstance(loaded_results, pd.DataFrame) and not loaded_results.empty:
-                        st.caption(f"Loaded rows: {len(loaded_results):,}")
-                        st.caption(f"Source: {st.session_state.get('street_results_upload_name', 'uploaded CSV')}")
-                        if st.button("Clear Uploaded Street Results", use_container_width=True):
-                            st.session_state["street_results_df"] = pd.DataFrame(columns=["PA ID Number", "F", "A", "U", "NH", "Yard Sign", "Notes"])
-                            st.session_state["street_results_filters"] = {}
-                            st.session_state.pop("street_results_upload_sig", None)
-                            st.session_state.pop("street_results_upload_name", None)
-                            st.rerun()
-                    else:
-                        st.caption("No street results uploaded yet.")
-    
-                loaded_results = st.session_state.get("street_results_df")
-                if isinstance(loaded_results, pd.DataFrame) and not loaded_results.empty:
-                    st.caption("These tracking filters only affect the Street List outputs, so you can reprint or re-export candidate follow-up lists without changing the dashboard counts.")
-                    filter_defaults = st.session_state.get("street_results_filters", {}) or {}
-                    street_filter_cols = st.columns(5, gap="small")
-                    street_results_filters = {}
-                    for col, field in zip(street_filter_cols, ["F", "A", "U", "NH", "Yard Sign"]):
-                        with col:
-                            street_results_filters[field] = st.selectbox(
-                                field,
-                                ["All", "Marked", "Unmarked"],
-                                index=["All", "Marked", "Unmarked"].index(filter_defaults.get(field, "All")),
-                                key=f"street_results_filter_{field}",
+        
+                with exp_cols[1]:
+                    if st.button("Prepare Texting CSV", use_container_width=True):
+                        with st.spinner("Building texting CSV from detail shards..."):
+                            export_df = build_texting_export(active)
+                            st.session_state["texting_export_df"] = export_df
+                    if "texting_export_df" in st.session_state:
+                        st.download_button(
+                            "Download Texting CSV",
+                            data=dataframe_to_csv_bytes(st.session_state["texting_export_df"]),
+                            file_name="candidate_connect_texting.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                        )
+        
+                with exp_cols[2]:
+                    if st.button("Prepare Mail CSV", use_container_width=True):
+                        with st.spinner("Building mail CSV from detail shards..."):
+                            export_df = build_mail_export(active, householded=(mail_mode == "Householded"))
+                            st.session_state["mail_export_df"] = export_df
+                            st.session_state["mail_export_mode"] = mail_mode
+                    if "mail_export_df" in st.session_state:
+                        suffix = "householded" if st.session_state.get("mail_export_mode") == "Householded" else "individual"
+                        st.download_button(
+                            "Download Mail CSV",
+                            data=dataframe_to_csv_bytes(st.session_state["mail_export_df"]),
+                            file_name=f"candidate_connect_mail_{suffix}.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                        )
+        
+            with output_tabs[1]:
+                st.markdown('<div class="small-header">Reports</div>', unsafe_allow_html=True)
+                st.caption("Prepare PDFs only when needed to keep the app responsive.")
+        
+                report_sections = st.tabs(["Summary", "Street List", "Walk Sheet", "Mailing Labels"])
+        
+                with report_sections[0]:
+                    st.caption("Builds a clean PDF summary of the current filtered universe with overview counts, selected filters, and party/gender/age breakdowns.")
+                    summary_cols = st.columns(2, gap="medium")
+                    with summary_cols[0]:
+                        if st.button("Prepare Summary Report PDF", use_container_width=True):
+                            with st.spinner("Building Summary Report PDF from current filtered universe..."):
+                                pdf_bytes = generate_summary_report_pdf_bytes(active, cols)
+                                st.session_state["summary_report_pdf_bytes"] = pdf_bytes
+                    with summary_cols[1]:
+                        if "summary_report_pdf_bytes" in st.session_state and st.session_state["summary_report_pdf_bytes"]:
+                            st.download_button(
+                                "Download Summary Report PDF",
+                                data=st.session_state["summary_report_pdf_bytes"],
+                                file_name="candidate_connect_summary_report.pdf",
+                                mime="application/pdf",
+                                use_container_width=True,
                             )
-                    st.session_state["street_results_filters"] = street_results_filters
-                else:
-                    st.caption("Download the Street List Excel tracking sheet if you want a ready-to-use file with F, A, U, NH, Yard Sign, and Notes columns, then upload it back after results are entered.")
-    
-                pdf_cols = st.columns(2, gap="medium")
-                with pdf_cols[0]:
-                    if st.button("Prepare Street List PDF", use_container_width=True):
-                        with st.spinner("Building Street List PDF from filtered detail shards..."):
-                            pdf_bytes = generate_street_list_pdf_bytes(active)
-                            st.session_state["street_pdf_bytes"] = pdf_bytes
-                with pdf_cols[1]:
-                    if "street_pdf_bytes" in st.session_state and st.session_state["street_pdf_bytes"]:
+        
+                with report_sections[1]:
+                    st.caption("Builds a compact precinct-grouped PDF and also supports a Street List Excel tracking sheet so the same list can be used to record F, A, U, NH, and Yard Sign results.")
+                    upload_cols = st.columns([1, 1.2, 1], gap="medium")
+                    with upload_cols[0]:
                         st.download_button(
-                            "Download Street List PDF",
-                            data=st.session_state["street_pdf_bytes"],
-                            file_name="candidate_connect_street_list.pdf",
-                            mime="application/pdf",
+                            "Download Street Results CSV Template",
+                            data=get_street_results_template_csv_bytes(),
+                            file_name="candidate_connect_street_results_template.csv",
+                            mime="text/csv",
                             use_container_width=True,
                         )
-    
-            with report_sections[2]:
-                st.caption("Builds a volunteer-friendly walk sheet and supports a tracking workbook that can be uploaded back by PA ID.")
-                upload_cols = st.columns([1, 1.15, 1], gap="medium")
-                with upload_cols[0]:
-                    st.download_button(
-                        "Download Walk Sheet Tracking Template",
-                        data=get_walk_sheet_tracking_template_csv_bytes(),
-                        file_name="candidate_connect_walk_sheet_tracking_template.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                    )
-                    if st.button("Prepare Walk Sheet Excel Tracking Sheet", use_container_width=True):
-                        with st.spinner("Building Walk Sheet Excel tracking sheet from filtered detail shards..."):
-                            excel_bytes = build_walk_sheet_tracking_excel_bytes(active)
-                            st.session_state["walk_sheet_tracking_excel_bytes"] = excel_bytes
-                    if "walk_sheet_tracking_excel_bytes" in st.session_state and st.session_state["walk_sheet_tracking_excel_bytes"]:
                         st.download_button(
-                            "Download Walk Sheet Excel Tracking Sheet",
-                            data=st.session_state["walk_sheet_tracking_excel_bytes"],
-                            file_name="candidate_connect_walk_sheet_tracking.xlsx",
+                            "Download Street List Excel Tracking Sheet",
+                            data=get_street_results_sheet_bytes(active),
+                            file_name="candidate_connect_street_list_tracking.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True,
                         )
-                with upload_cols[1]:
-                    uploaded_walk_file = st.file_uploader(
-                        "Upload Walk Sheet Results",
-                        type=["csv", "xlsx"],
-                        key="walk_results_upload",
-                        help="Upload a completed Walk Sheet tracking workbook or CSV using PA ID Number plus Contacted, Result, Support Level, Follow-Up, and Notes columns.",
-                    )
-                    if uploaded_walk_file is not None:
-                        upload_sig = f"{uploaded_walk_file.name}:{getattr(uploaded_walk_file, 'size', 0)}"
-                        if st.session_state.get("walk_results_upload_sig") != upload_sig:
-                            try:
-                                if str(uploaded_walk_file.name).lower().endswith(".xlsx"):
-                                    raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str).fillna("")
-                                    normalized_cols = [re.sub(r"[^a-z0-9]+", "", str(c).strip().lower()) for c in raw_upload_df.columns]
-                                    if "paidnumber" not in normalized_cols:
-                                        try:
-                                            raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str, header=4).fillna("")
-                                        except Exception:
-                                            uploaded_walk_file.seek(0)
-                                            raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str).fillna("")
-                                    uploaded_walk_file.seek(0)
-                                else:
-                                    raw_upload_df = pd.read_csv(uploaded_walk_file, dtype=str).fillna("")
-                                standardized_upload_df = standardize_uploaded_walk_results(raw_upload_df)
-                                if standardized_upload_df.empty:
-                                    st.warning("No usable PA ID Number column was found in the uploaded Walk Sheet file.")
-                                else:
-                                    st.session_state["walk_results_df"] = standardized_upload_df
-                                    st.session_state["walk_results_upload_sig"] = upload_sig
-                                    st.session_state["walk_results_upload_name"] = uploaded_walk_file.name
-                                    st.success(f"Loaded {len(standardized_upload_df):,} walk-result rows.")
-                            except Exception as exc:
-                                st.error(f"Could not read the Walk Sheet results file: {exc}")
-                with upload_cols[2]:
+                    with upload_cols[1]:
+                        uploaded_results_file = st.file_uploader(
+                            "Upload Street Results File",
+                            type=["csv", "xlsx"],
+                            key="street_results_upload",
+                            help="Upload either the Street List Excel tracking sheet or a CSV using PA ID Number plus F, A, U, NH, and Yard Sign columns.",
+                        )
+                        if uploaded_results_file is not None:
+                            upload_sig = f"{uploaded_results_file.name}:{getattr(uploaded_results_file, 'size', 0)}"
+                            if st.session_state.get("street_results_upload_sig") != upload_sig:
+                                try:
+                                    if str(uploaded_results_file.name).lower().endswith(".xlsx"):
+                                        raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str).fillna("")
+                                        normalized_cols = [re.sub(r"[^a-z0-9]+", "", str(c).strip().lower()) for c in raw_upload_df.columns]
+                                        if "paidnumber" not in normalized_cols:
+                                            try:
+                                                raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str, header=4).fillna("")
+                                            except Exception:
+                                                uploaded_results_file.seek(0)
+                                                raw_upload_df = pd.read_excel(uploaded_results_file, dtype=str).fillna("")
+                                        uploaded_results_file.seek(0)
+                                    else:
+                                        raw_upload_df = pd.read_csv(uploaded_results_file, dtype=str).fillna("")
+                                    standardized_upload_df = standardize_uploaded_street_results(raw_upload_df)
+                                    if standardized_upload_df.empty:
+                                        st.warning("No usable PA ID Number column was found in the uploaded file.")
+                                    else:
+                                        st.session_state["street_results_df"] = standardized_upload_df
+                                        st.session_state["street_results_upload_sig"] = upload_sig
+                                        st.session_state["street_results_upload_name"] = uploaded_results_file.name
+                                        st.success(f"Loaded {len(standardized_upload_df):,} street-result rows.")
+                                except Exception as exc:
+                                    st.error(f"Could not read the street results file: {exc}")
+                    with upload_cols[2]:
+                        loaded_results = st.session_state.get("street_results_df")
+                        if isinstance(loaded_results, pd.DataFrame) and not loaded_results.empty:
+                            st.caption(f"Loaded rows: {len(loaded_results):,}")
+                            st.caption(f"Source: {st.session_state.get('street_results_upload_name', 'uploaded CSV')}")
+                            if st.button("Clear Uploaded Street Results", use_container_width=True):
+                                st.session_state["street_results_df"] = pd.DataFrame(columns=["PA ID Number", "F", "A", "U", "NH", "Yard Sign", "Notes"])
+                                st.session_state["street_results_filters"] = {}
+                                st.session_state.pop("street_results_upload_sig", None)
+                                st.session_state.pop("street_results_upload_name", None)
+                                st.rerun()
+                        else:
+                            st.caption("No street results uploaded yet.")
+        
+                    loaded_results = st.session_state.get("street_results_df")
+                    if isinstance(loaded_results, pd.DataFrame) and not loaded_results.empty:
+                        st.caption("These tracking filters only affect the Street List outputs, so you can reprint or re-export candidate follow-up lists without changing the dashboard counts.")
+                        filter_defaults = st.session_state.get("street_results_filters", {}) or {}
+                        street_filter_cols = st.columns(5, gap="small")
+                        street_results_filters = {}
+                        for col, field in zip(street_filter_cols, ["F", "A", "U", "NH", "Yard Sign"]):
+                            with col:
+                                street_results_filters[field] = st.selectbox(
+                                    field,
+                                    ["All", "Marked", "Unmarked"],
+                                    index=["All", "Marked", "Unmarked"].index(filter_defaults.get(field, "All")),
+                                    key=f"street_results_filter_{field}",
+                                )
+                        st.session_state["street_results_filters"] = street_results_filters
+                    else:
+                        st.caption("Download the Street List Excel tracking sheet if you want a ready-to-use file with F, A, U, NH, Yard Sign, and Notes columns, then upload it back after results are entered.")
+        
+                    pdf_cols = st.columns(2, gap="medium")
+                    with pdf_cols[0]:
+                        if st.button("Prepare Street List PDF", use_container_width=True):
+                            with st.spinner("Building Street List PDF from filtered detail shards..."):
+                                pdf_bytes = generate_street_list_pdf_bytes(active)
+                                st.session_state["street_pdf_bytes"] = pdf_bytes
+                    with pdf_cols[1]:
+                        if "street_pdf_bytes" in st.session_state and st.session_state["street_pdf_bytes"]:
+                            st.download_button(
+                                "Download Street List PDF",
+                                data=st.session_state["street_pdf_bytes"],
+                                file_name="candidate_connect_street_list.pdf",
+                                mime="application/pdf",
+                                use_container_width=True,
+                            )
+        
+                with report_sections[2]:
+                    st.caption("Builds a volunteer-friendly walk sheet and supports a tracking workbook that can be uploaded back by PA ID.")
+                    upload_cols = st.columns([1, 1.15, 1], gap="medium")
+                    with upload_cols[0]:
+                        st.download_button(
+                            "Download Walk Sheet Tracking Template",
+                            data=get_walk_sheet_tracking_template_csv_bytes(),
+                            file_name="candidate_connect_walk_sheet_tracking_template.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                        )
+                        if st.button("Prepare Walk Sheet Excel Tracking Sheet", use_container_width=True):
+                            with st.spinner("Building Walk Sheet Excel tracking sheet from filtered detail shards..."):
+                                excel_bytes = build_walk_sheet_tracking_excel_bytes(active)
+                                st.session_state["walk_sheet_tracking_excel_bytes"] = excel_bytes
+                        if "walk_sheet_tracking_excel_bytes" in st.session_state and st.session_state["walk_sheet_tracking_excel_bytes"]:
+                            st.download_button(
+                                "Download Walk Sheet Excel Tracking Sheet",
+                                data=st.session_state["walk_sheet_tracking_excel_bytes"],
+                                file_name="candidate_connect_walk_sheet_tracking.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
+                            )
+                    with upload_cols[1]:
+                        uploaded_walk_file = st.file_uploader(
+                            "Upload Walk Sheet Results",
+                            type=["csv", "xlsx"],
+                            key="walk_results_upload",
+                            help="Upload a completed Walk Sheet tracking workbook or CSV using PA ID Number plus Contacted, Result, Support Level, Follow-Up, and Notes columns.",
+                        )
+                        if uploaded_walk_file is not None:
+                            upload_sig = f"{uploaded_walk_file.name}:{getattr(uploaded_walk_file, 'size', 0)}"
+                            if st.session_state.get("walk_results_upload_sig") != upload_sig:
+                                try:
+                                    if str(uploaded_walk_file.name).lower().endswith(".xlsx"):
+                                        raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str).fillna("")
+                                        normalized_cols = [re.sub(r"[^a-z0-9]+", "", str(c).strip().lower()) for c in raw_upload_df.columns]
+                                        if "paidnumber" not in normalized_cols:
+                                            try:
+                                                raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str, header=4).fillna("")
+                                            except Exception:
+                                                uploaded_walk_file.seek(0)
+                                                raw_upload_df = pd.read_excel(uploaded_walk_file, dtype=str).fillna("")
+                                        uploaded_walk_file.seek(0)
+                                    else:
+                                        raw_upload_df = pd.read_csv(uploaded_walk_file, dtype=str).fillna("")
+                                    standardized_upload_df = standardize_uploaded_walk_results(raw_upload_df)
+                                    if standardized_upload_df.empty:
+                                        st.warning("No usable PA ID Number column was found in the uploaded Walk Sheet file.")
+                                    else:
+                                        st.session_state["walk_results_df"] = standardized_upload_df
+                                        st.session_state["walk_results_upload_sig"] = upload_sig
+                                        st.session_state["walk_results_upload_name"] = uploaded_walk_file.name
+                                        st.success(f"Loaded {len(standardized_upload_df):,} walk-result rows.")
+                                except Exception as exc:
+                                    st.error(f"Could not read the Walk Sheet results file: {exc}")
+                    with upload_cols[2]:
+                        loaded_walk_results = st.session_state.get("walk_results_df")
+                        if isinstance(loaded_walk_results, pd.DataFrame) and not loaded_walk_results.empty:
+                            st.caption(f"Loaded rows: {len(loaded_walk_results):,}")
+                            st.caption(f"Source: {st.session_state.get('walk_results_upload_name', 'uploaded file')}")
+                            if st.button("Clear Uploaded Walk Sheet Results", use_container_width=True):
+                                st.session_state["walk_results_df"] = pd.DataFrame(columns=["PA ID Number", "Contacted", "Result", "Support Level", "Follow-Up", "Notes"])
+                                st.session_state["walk_results_filters"] = {}
+                                st.session_state.pop("walk_results_upload_sig", None)
+                                st.session_state.pop("walk_results_upload_name", None)
+                                st.rerun()
+                        else:
+                            st.caption("No Walk Sheet results uploaded yet.")
+        
                     loaded_walk_results = st.session_state.get("walk_results_df")
                     if isinstance(loaded_walk_results, pd.DataFrame) and not loaded_walk_results.empty:
-                        st.caption(f"Loaded rows: {len(loaded_walk_results):,}")
-                        st.caption(f"Source: {st.session_state.get('walk_results_upload_name', 'uploaded file')}")
-                        if st.button("Clear Uploaded Walk Sheet Results", use_container_width=True):
-                            st.session_state["walk_results_df"] = pd.DataFrame(columns=["PA ID Number", "Contacted", "Result", "Support Level", "Follow-Up", "Notes"])
-                            st.session_state["walk_results_filters"] = {}
-                            st.session_state.pop("walk_results_upload_sig", None)
-                            st.session_state.pop("walk_results_upload_name", None)
-                            st.rerun()
+                        st.caption("These tracking filters apply only to the Walk Sheet PDF, so you can rebuild volunteer re-knock or follow-up sheets without changing the dashboard counts.")
+                        filter_defaults = st.session_state.get("walk_results_filters", {}) or {}
+                        walk_filter_cols = st.columns(4, gap="small")
+                        with walk_filter_cols[0]:
+                            contacted_filter = st.selectbox(
+                                "Contacted",
+                                ["All", "Marked", "Unmarked"],
+                                index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Contacted", "All")),
+                                key="walk_results_filter_contacted",
+                            )
+                        with walk_filter_cols[1]:
+                            not_home_filter = st.selectbox(
+                                "Not Home",
+                                ["All", "Marked", "Unmarked"],
+                                index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Not Home", "All")),
+                                key="walk_results_filter_not_home",
+                            )
+                        with walk_filter_cols[2]:
+                            followup_filter = st.selectbox(
+                                "Follow-Up",
+                                ["All", "Marked", "Unmarked"],
+                                index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Follow-Up", "All")),
+                                key="walk_results_filter_followup",
+                            )
+                        support_options = ["All"] + sorted(
+                            {normalize_export_text(v) for v in loaded_walk_results["Support Level"].tolist() if normalize_export_text(v)}
+                        )
+                        default_support = filter_defaults.get("Support Level", "All")
+                        if default_support not in support_options:
+                            default_support = "All"
+                        with walk_filter_cols[3]:
+                            support_filter = st.selectbox(
+                                "Support Level",
+                                support_options,
+                                index=support_options.index(default_support),
+                                key="walk_results_filter_support",
+                            )
+                        st.session_state["walk_results_filters"] = {
+                            "Contacted": contacted_filter,
+                            "Not Home": not_home_filter,
+                            "Follow-Up": followup_filter,
+                            "Support Level": support_filter,
+                        }
                     else:
-                        st.caption("No Walk Sheet results uploaded yet.")
-    
-                loaded_walk_results = st.session_state.get("walk_results_df")
-                if isinstance(loaded_walk_results, pd.DataFrame) and not loaded_walk_results.empty:
-                    st.caption("These tracking filters apply only to the Walk Sheet PDF, so you can rebuild volunteer re-knock or follow-up sheets without changing the dashboard counts.")
-                    filter_defaults = st.session_state.get("walk_results_filters", {}) or {}
-                    walk_filter_cols = st.columns(4, gap="small")
-                    with walk_filter_cols[0]:
-                        contacted_filter = st.selectbox(
-                            "Contacted",
-                            ["All", "Marked", "Unmarked"],
-                            index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Contacted", "All")),
-                            key="walk_results_filter_contacted",
-                        )
-                    with walk_filter_cols[1]:
-                        not_home_filter = st.selectbox(
-                            "Not Home",
-                            ["All", "Marked", "Unmarked"],
-                            index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Not Home", "All")),
-                            key="walk_results_filter_not_home",
-                        )
-                    with walk_filter_cols[2]:
-                        followup_filter = st.selectbox(
-                            "Follow-Up",
-                            ["All", "Marked", "Unmarked"],
-                            index=["All", "Marked", "Unmarked"].index(filter_defaults.get("Follow-Up", "All")),
-                            key="walk_results_filter_followup",
-                        )
-                    support_options = ["All"] + sorted(
-                        {normalize_export_text(v) for v in loaded_walk_results["Support Level"].tolist() if normalize_export_text(v)}
+                        st.caption("Download the Walk Sheet Excel tracking sheet if you want a ready-to-use file with Contacted, Result, Support Level, Follow-Up, and Notes columns, then upload it back after results are entered.")
+        
+                    walk_cols = st.columns(2, gap="medium")
+                    with walk_cols[0]:
+                        if st.button("Prepare Walk Sheet PDF", use_container_width=True):
+                            with st.spinner("Building Walk Sheet PDF from filtered detail shards..."):
+                                pdf_bytes = generate_walk_sheet_pdf_bytes(active)
+                                st.session_state["walk_sheet_pdf_bytes"] = pdf_bytes
+                    with walk_cols[1]:
+                        if "walk_sheet_pdf_bytes" in st.session_state and st.session_state["walk_sheet_pdf_bytes"]:
+                            st.download_button(
+                                "Download Walk Sheet PDF",
+                                data=st.session_state["walk_sheet_pdf_bytes"],
+                                file_name="candidate_connect_walk_sheet.pdf",
+                                mime="application/pdf",
+                                use_container_width=True,
+                            )
+        
+                with report_sections[3]:
+                    st.caption("Builds a print-ready Avery 5160-style PDF label sheet from the current mail export universe.")
+                    label_mode = st.radio(
+                        "Label Mode",
+                        ["Householded", "Individual"],
+                        horizontal=True,
+                        key="mail_labels_mode",
                     )
-                    default_support = filter_defaults.get("Support Level", "All")
-                    if default_support not in support_options:
-                        default_support = "All"
-                    with walk_filter_cols[3]:
-                        support_filter = st.selectbox(
-                            "Support Level",
-                            support_options,
-                            index=support_options.index(default_support),
-                            key="walk_results_filter_support",
-                        )
-                    st.session_state["walk_results_filters"] = {
-                        "Contacted": contacted_filter,
-                        "Not Home": not_home_filter,
-                        "Follow-Up": followup_filter,
-                        "Support Level": support_filter,
-                    }
+                    label_cols = st.columns(2, gap="medium")
+                    with label_cols[0]:
+                        if st.button("Prepare Mailing Labels PDF", use_container_width=True):
+                            with st.spinner("Building mailing labels PDF from filtered detail shards..."):
+                                pdf_bytes = generate_mailing_labels_pdf_bytes(active, householded=(label_mode == "Householded"))
+                                st.session_state["mailing_labels_pdf_bytes"] = pdf_bytes
+                                st.session_state["mailing_labels_pdf_mode"] = label_mode
+                    with label_cols[1]:
+                        if "mailing_labels_pdf_bytes" in st.session_state and st.session_state["mailing_labels_pdf_bytes"]:
+                            suffix = "householded" if st.session_state.get("mailing_labels_pdf_mode") == "Householded" else "individual"
+                            st.download_button(
+                                "Download Mailing Labels PDF",
+                                data=st.session_state["mailing_labels_pdf_bytes"],
+                                file_name=f"candidate_connect_mailing_labels_{suffix}.pdf",
+                                mime="application/pdf",
+                                use_container_width=True,
+                            )
+        
+        
+            with output_tabs[2]:
+                st.markdown('<div class="small-header">Turf Builder</div>', unsafe_allow_html=True)
+                st.caption("Split the current filtered universe into turf packets and download a ZIP with per-turf CSVs and Walk Sheet PDFs.")
+        
+                turf_mode_labels = {
+                    "Target Doors": "doors",
+                    "Target Voters": "voters",
+                    "By Precinct": "precinct",
+                    "By Municipality": "municipality",
+                }
+        
+                turf_mode = st.selectbox(
+                    "Split Method",
+                    list(turf_mode_labels.keys()),
+                    key="turf_mode_select",
+                )
+        
+                if turf_mode in ["Target Doors", "Target Voters"]:
+                    default_size = 50 if turf_mode == "Target Doors" else 100
+                    turf_target_size = st.slider(
+                        "Target Size Per Turf",
+                        min_value=10,
+                        max_value=500,
+                        value=default_size,
+                        step=5,
+                        key="turf_target_size_slider",
+                    )
+                    st.caption(
+                        "Target Doors uses households/address groups. Target Voters uses total voter records. "
+                        "Packets are built sequentially from the current filtered universe."
+                    )
                 else:
-                    st.caption("Download the Walk Sheet Excel tracking sheet if you want a ready-to-use file with Contacted, Result, Support Level, Follow-Up, and Notes columns, then upload it back after results are entered.")
-    
-                walk_cols = st.columns(2, gap="medium")
-                with walk_cols[0]:
-                    if st.button("Prepare Walk Sheet PDF", use_container_width=True):
-                        with st.spinner("Building Walk Sheet PDF from filtered detail shards..."):
-                            pdf_bytes = generate_walk_sheet_pdf_bytes(active)
-                            st.session_state["walk_sheet_pdf_bytes"] = pdf_bytes
-                with walk_cols[1]:
-                    if "walk_sheet_pdf_bytes" in st.session_state and st.session_state["walk_sheet_pdf_bytes"]:
-                        st.download_button(
-                            "Download Walk Sheet PDF",
-                            data=st.session_state["walk_sheet_pdf_bytes"],
-                            file_name="candidate_connect_walk_sheet.pdf",
-                            mime="application/pdf",
-                            use_container_width=True,
-                        )
-    
-            with report_sections[3]:
-                st.caption("Builds a print-ready Avery 5160-style PDF label sheet from the current mail export universe.")
-                label_mode = st.radio(
-                    "Label Mode",
-                    ["Householded", "Individual"],
-                    horizontal=True,
-                    key="mail_labels_mode",
-                )
-                label_cols = st.columns(2, gap="medium")
-                with label_cols[0]:
-                    if st.button("Prepare Mailing Labels PDF", use_container_width=True):
-                        with st.spinner("Building mailing labels PDF from filtered detail shards..."):
-                            pdf_bytes = generate_mailing_labels_pdf_bytes(active, householded=(label_mode == "Householded"))
-                            st.session_state["mailing_labels_pdf_bytes"] = pdf_bytes
-                            st.session_state["mailing_labels_pdf_mode"] = label_mode
-                with label_cols[1]:
-                    if "mailing_labels_pdf_bytes" in st.session_state and st.session_state["mailing_labels_pdf_bytes"]:
-                        suffix = "householded" if st.session_state.get("mailing_labels_pdf_mode") == "Householded" else "individual"
-                        st.download_button(
-                            "Download Mailing Labels PDF",
-                            data=st.session_state["mailing_labels_pdf_bytes"],
-                            file_name=f"candidate_connect_mailing_labels_{suffix}.pdf",
-                            mime="application/pdf",
-                            use_container_width=True,
-                        )
-    
-    
-        with output_tabs[2]:
-            st.markdown('<div class="small-header">Turf Builder</div>', unsafe_allow_html=True)
-            st.caption("Split the current filtered universe into turf packets and download a ZIP with per-turf CSVs and Walk Sheet PDFs.")
-    
-            turf_mode_labels = {
-                "Target Doors": "doors",
-                "Target Voters": "voters",
-                "By Precinct": "precinct",
-                "By Municipality": "municipality",
-            }
-    
-            turf_mode = st.selectbox(
-                "Split Method",
-                list(turf_mode_labels.keys()),
-                key="turf_mode_select",
-            )
-    
-            if turf_mode in ["Target Doors", "Target Voters"]:
-                default_size = 50 if turf_mode == "Target Doors" else 100
-                turf_target_size = st.slider(
-                    "Target Size Per Turf",
-                    min_value=10,
-                    max_value=500,
-                    value=default_size,
-                    step=5,
-                    key="turf_target_size_slider",
-                )
-                st.caption(
-                    "Target Doors uses households/address groups. Target Voters uses total voter records. "
-                    "Packets are built sequentially from the current filtered universe."
-                )
-            else:
-                turf_target_size = 0
-                st.caption("This will create one turf per selected precinct or municipality in the current filtered universe.")
-    
-            assign_cols = st.columns(3, gap="medium")
-            with assign_cols[0]:
-                turf_packet_label = st.text_input(
-                    "Packet Label",
-                    value="",
-                    placeholder="Week 1 - Team A",
-                    key="turf_packet_label_input",
-                )
-            with assign_cols[1]:
-                turf_volunteer_name = st.text_input(
-                    "Volunteer Name",
-                    value="",
-                    placeholder="Volunteer or team name",
-                    key="turf_volunteer_name_input",
-                )
-            with assign_cols[2]:
-                turf_packet_date = st.date_input(
-                    "Packet Date",
-                    value=datetime.now().date(),
-                    key="turf_packet_date_input",
-                )
-    
-            perf_cols = st.columns([1.2, 1, 1], gap="medium")
-            with perf_cols[0]:
-                turf_output_mode = st.selectbox(
-                    "Output Type",
-                    ["CSV + Walk Sheet PDFs", "CSV Only (faster)"],
-                    key="turf_output_mode_select",
-                )
-            with perf_cols[1]:
-                turf_limit_packets = st.number_input(
-                    "Limit Turf Packets",
-                    min_value=0,
-                    value=0,
-                    step=1,
-                    help="0 means build all turfs. Use a smaller number for quick tests.",
-                    key="turf_limit_packets_input",
-                )
-            with perf_cols[2]:
-                st.markdown("")
-                st.caption("CSV Only is fastest. By Precinct and By Municipality can take much longer when PDFs are included.")
-    
-            if turf_output_mode == "CSV + Walk Sheet PDFs" and turf_mode in ["By Precinct", "By Municipality"]:
-                st.warning("This can take longer because the app creates one PDF per turf. For the fastest build, choose CSV Only or set a small turf limit first.")
-    
-            turf_cols = st.columns(2, gap="medium")
-            with turf_cols[0]:
-                if st.button("Prepare Turf Packet ZIP", use_container_width=True):
-                    spinner_text = "Building turf packet ZIP from filtered detail shards..."
-                    if turf_output_mode == "CSV + Walk Sheet PDFs":
-                        spinner_text = "Building turf packets and walk sheets from filtered detail shards..."
-                    with st.spinner(spinner_text):
-                        zip_bytes = build_turf_packet_zip(
-                            active_filters=active,
-                            mode=turf_mode_labels[turf_mode],
-                            target_size=turf_target_size,
-                            volunteer_name=turf_volunteer_name,
-                            packet_label=turf_packet_label,
-                            packet_date=turf_packet_date.strftime("%Y-%m-%d") if turf_packet_date else "",
-                            include_walksheets=(turf_output_mode == "CSV + Walk Sheet PDFs"),
-                            max_turfs=int(turf_limit_packets or 0),
-                        )
-                        st.session_state["turf_packet_zip_bytes"] = zip_bytes
-                        st.session_state["turf_packet_mode"] = turf_mode
-                        st.session_state["turf_packet_label"] = turf_packet_label
-                        st.session_state["turf_output_mode"] = turf_output_mode
-                        st.session_state["turf_limit_packets"] = int(turf_limit_packets or 0)
-            with turf_cols[1]:
-                if "turf_packet_zip_bytes" in st.session_state and st.session_state["turf_packet_zip_bytes"]:
-                    mode_slug = normalize_export_text(st.session_state.get("turf_packet_mode", "turf_packets")).lower().replace(" ", "_")
-                    label_slug = sanitize_filename_part(st.session_state.get("turf_packet_label", ""))
-                    output_slug = "csv_only" if st.session_state.get("turf_output_mode") == "CSV Only (faster)" else "csv_and_pdfs"
-                    limit_val = int(st.session_state.get("turf_limit_packets", 0) or 0)
-                    limit_slug = f"_first_{limit_val}" if limit_val > 0 else ""
-                    file_stub = f"candidate_connect_turf_packets_{label_slug}_{mode_slug}_{output_slug}{limit_slug}" if label_slug else f"candidate_connect_turf_packets_{mode_slug}_{output_slug}{limit_slug}"
-                    st.download_button(
-                        "Download Turf Packet ZIP",
-                        data=st.session_state["turf_packet_zip_bytes"],
-                        file_name=f"{file_stub}.zip",
-                        mime="application/zip",
-                        use_container_width=True,
+                    turf_target_size = 0
+                    st.caption("This will create one turf per selected precinct or municipality in the current filtered universe.")
+        
+                assign_cols = st.columns(3, gap="medium")
+                with assign_cols[0]:
+                    turf_packet_label = st.text_input(
+                        "Packet Label",
+                        value="",
+                        placeholder="Week 1 - Team A",
+                        key="turf_packet_label_input",
                     )
-    
-    
-        st.markdown('</div>', unsafe_allow_html=True)
-
-
-with dashboard_tabs[3]:
-    if large_filter_mode:
-        st.info("Voter Lookup is available here even in large-universe mode, but it searches inside the current filtered universe. Narrow geography if you want a smaller result set.")
-    render_voter_lookup_tab(active, columns)
+                with assign_cols[1]:
+                    turf_volunteer_name = st.text_input(
+                        "Volunteer Name",
+                        value="",
+                        placeholder="Volunteer or team name",
+                        key="turf_volunteer_name_input",
+                    )
+                with assign_cols[2]:
+                    turf_packet_date = st.date_input(
+                        "Packet Date",
+                        value=datetime.now().date(),
+                        key="turf_packet_date_input",
+                    )
+        
+                perf_cols = st.columns([1.2, 1, 1], gap="medium")
+                with perf_cols[0]:
+                    turf_output_mode = st.selectbox(
+                        "Output Type",
+                        ["CSV + Walk Sheet PDFs", "CSV Only (faster)"],
+                        key="turf_output_mode_select",
+                    )
+                with perf_cols[1]:
+                    turf_limit_packets = st.number_input(
+                        "Limit Turf Packets",
+                        min_value=0,
+                        value=0,
+                        step=1,
+                        help="0 means build all turfs. Use a smaller number for quick tests.",
+                        key="turf_limit_packets_input",
+                    )
+                with perf_cols[2]:
+                    st.markdown("")
+                    st.caption("CSV Only is fastest. By Precinct and By Municipality can take much longer when PDFs are included.")
+        
+                if turf_output_mode == "CSV + Walk Sheet PDFs" and turf_mode in ["By Precinct", "By Municipality"]:
+                    st.warning("This can take longer because the app creates one PDF per turf. For the fastest build, choose CSV Only or set a small turf limit first.")
+        
+                turf_cols = st.columns(2, gap="medium")
+                with turf_cols[0]:
+                    if st.button("Prepare Turf Packet ZIP", use_container_width=True):
+                        spinner_text = "Building turf packet ZIP from filtered detail shards..."
+                        if turf_output_mode == "CSV + Walk Sheet PDFs":
+                            spinner_text = "Building turf packets and walk sheets from filtered detail shards..."
+                        with st.spinner(spinner_text):
+                            zip_bytes = build_turf_packet_zip(
+                                active_filters=active,
+                                mode=turf_mode_labels[turf_mode],
+                                target_size=turf_target_size,
+                                volunteer_name=turf_volunteer_name,
+                                packet_label=turf_packet_label,
+                                packet_date=turf_packet_date.strftime("%Y-%m-%d") if turf_packet_date else "",
+                                include_walksheets=(turf_output_mode == "CSV + Walk Sheet PDFs"),
+                                max_turfs=int(turf_limit_packets or 0),
+                            )
+                            st.session_state["turf_packet_zip_bytes"] = zip_bytes
+                            st.session_state["turf_packet_mode"] = turf_mode
+                            st.session_state["turf_packet_label"] = turf_packet_label
+                            st.session_state["turf_output_mode"] = turf_output_mode
+                            st.session_state["turf_limit_packets"] = int(turf_limit_packets or 0)
+                with turf_cols[1]:
+                    if "turf_packet_zip_bytes" in st.session_state and st.session_state["turf_packet_zip_bytes"]:
+                        mode_slug = normalize_export_text(st.session_state.get("turf_packet_mode", "turf_packets")).lower().replace(" ", "_")
+                        label_slug = sanitize_filename_part(st.session_state.get("turf_packet_label", ""))
+                        output_slug = "csv_only" if st.session_state.get("turf_output_mode") == "CSV Only (faster)" else "csv_and_pdfs"
+                        limit_val = int(st.session_state.get("turf_limit_packets", 0) or 0)
+                        limit_slug = f"_first_{limit_val}" if limit_val > 0 else ""
+                        file_stub = f"candidate_connect_turf_packets_{label_slug}_{mode_slug}_{output_slug}{limit_slug}" if label_slug else f"candidate_connect_turf_packets_{mode_slug}_{output_slug}{limit_slug}"
+                        st.download_button(
+                            "Download Turf Packet ZIP",
+                            data=st.session_state["turf_packet_zip_bytes"],
+                            file_name=f"{file_stub}.zip",
+                            mime="application/zip",
+                            use_container_width=True,
+                        )
+        
+        
+            st.markdown('</div>', unsafe_allow_html=True)
