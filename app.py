@@ -3148,6 +3148,34 @@ def format_lookup_zip(value) -> str:
     return raw
 
 
+def sanitize_multiselect_defaults(default_values, option_values):
+    if default_values is None:
+        return []
+    if not isinstance(default_values, (list, tuple, set)):
+        default_values = [default_values]
+    option_text = {str(v).strip(): v for v in option_values or []}
+    cleaned = []
+    for value in default_values:
+        key = str(value).strip()
+        if key in option_text:
+            cleaned.append(option_text[key])
+    return cleaned
+
+def sanitize_selectbox_value(current_value, option_values, fallback=None):
+    options_list = list(option_values or [])
+    if not options_list:
+        return fallback
+    if current_value in options_list:
+        return current_value
+    current_key = str(current_value).strip()
+    for option in options_list:
+        if str(option).strip() == current_key:
+            return option
+    if fallback in options_list:
+        return fallback
+    return options_list[0]
+
+
 def get_detail_columns(detail_paths):
     con = get_conn()
     paths_sql = "[" + ", ".join(sql_string_literal(p) for p in detail_paths) + "]"
@@ -4131,14 +4159,14 @@ with st.sidebar:
                     geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in cols]
                     geo_selections = {}
                     for col in geo_cols:
-                        geo_selections[col] = st.multiselect(col, opts.get(col, []), default=st.session_state.active_filters.get(col, []))
+                        geo_selections[col] = st.multiselect(col, opts.get(col, []), default=sanitize_multiselect_defaults(st.session_state.active_filters.get(col, []), opts.get(col, [])))
 
                 with st.expander("Voter Details", expanded=False):
-                    party_pick = st.multiselect("Party", opts.get("party_vals", []), default=st.session_state.active_filters.get("party_pick", []))
-                    hh_party_pick = st.multiselect("Household Party", opts.get("hh_party_vals", []), default=st.session_state.active_filters.get("hh_party_pick", [])) if "HH-Party" in cols else []
-                    calc_party_pick = st.multiselect("Calculated Party", opts.get("calc_party_vals", []), default=st.session_state.active_filters.get("calc_party_pick", [])) if "CalculatedParty" in cols else []
-                    gender_pick = st.multiselect("Gender", opts.get("gender_vals", []), default=st.session_state.active_filters.get("gender_pick", []))
-                    age_range_pick = st.multiselect("Age Range", opts.get("age_range_vals", []), default=st.session_state.active_filters.get("age_range_pick", []))
+                    party_pick = st.multiselect("Party", opts.get("party_vals", []), default=sanitize_multiselect_defaults(st.session_state.active_filters.get("party_pick", []), opts.get("party_vals", [])))
+                    hh_party_pick = st.multiselect("Household Party", opts.get("hh_party_vals", []), default=sanitize_multiselect_defaults(st.session_state.active_filters.get("hh_party_pick", []), opts.get("hh_party_vals", []))) if "HH-Party" in cols else []
+                    calc_party_pick = st.multiselect("Calculated Party", opts.get("calc_party_vals", []), default=sanitize_multiselect_defaults(st.session_state.active_filters.get("calc_party_pick", []), opts.get("calc_party_vals", []))) if "CalculatedParty" in cols else []
+                    gender_pick = st.multiselect("Gender", opts.get("gender_vals", []), default=sanitize_multiselect_defaults(st.session_state.active_filters.get("gender_pick", []), opts.get("gender_vals", [])))
+                    age_range_pick = st.multiselect("Age Range", opts.get("age_range_vals", []), default=sanitize_multiselect_defaults(st.session_state.active_filters.get("age_range_pick", []), opts.get("age_range_vals", [])))
                     age_slider = None
                     if opts.get("age_min") is not None and opts.get("age_max") is not None:
                         age_slider = st.slider("Age", opts["age_min"], opts["age_max"], st.session_state.active_filters.get("age_slider", (opts["age_min"], opts["age_max"])))
@@ -4165,9 +4193,9 @@ with st.sidebar:
                         help="0-4 elections in the selected vote history field.",
                     )
 
-                    mib_applied_pick = st.multiselect("Mail Ballot Application Status", opts.get("mib_applied_vals", []), default=st.session_state.active_filters.get("mib_applied_pick", []))
-                    mib_ballot_pick = st.multiselect("Mail Ballot Vote Status", opts.get("mib_ballot_vals", []), default=st.session_state.active_filters.get("mib_ballot_pick", []))
-                    mb_perm_pick = st.multiselect("MB Perm", opts.get("mb_perm_vals", []), default=st.session_state.active_filters.get("mb_perm_pick", []))
+                    mib_applied_pick = st.multiselect("Mail Ballot Application Status", opts.get("mib_applied_vals", []), default=sanitize_multiselect_defaults(st.session_state.active_filters.get("mib_applied_pick", []), opts.get("mib_applied_vals", [])))
+                    mib_ballot_pick = st.multiselect("Mail Ballot Vote Status", opts.get("mib_ballot_vals", []), default=sanitize_multiselect_defaults(st.session_state.active_filters.get("mib_ballot_pick", []), opts.get("mib_ballot_vals", [])))
+                    mb_perm_pick = st.multiselect("MB Perm", opts.get("mb_perm_vals", []), default=sanitize_multiselect_defaults(st.session_state.active_filters.get("mb_perm_pick", []), opts.get("mb_perm_vals", [])))
 
                     mb_score_slider = None
                     if opts.get("mb_score_min") is not None and opts.get("mb_score_max") is not None:
@@ -4195,9 +4223,9 @@ with st.sidebar:
                     email_opts = ["All", "Has Email", "No Email"]
                     landline_opts = ["All", "Has Landline", "No Landline"]
                     mobile_opts = ["All", "Has Mobile", "No Mobile"]
-                    has_email = st.selectbox("Email", email_opts, index=email_opts.index(st.session_state.active_filters.get("has_email", "All")))
-                    has_landline = st.selectbox("Landline", landline_opts, index=landline_opts.index(st.session_state.active_filters.get("has_landline", "All")))
-                    has_mobile = st.selectbox("Mobile", mobile_opts, index=mobile_opts.index(st.session_state.active_filters.get("has_mobile", "All")))
+                    has_email = st.selectbox("Email", email_opts, index=email_opts.index(sanitize_selectbox_value(st.session_state.active_filters.get("has_email", "All"), email_opts, "All")))
+                    has_landline = st.selectbox("Landline", landline_opts, index=landline_opts.index(sanitize_selectbox_value(st.session_state.active_filters.get("has_landline", "All"), landline_opts, "All")))
+                    has_mobile = st.selectbox("Mobile", mobile_opts, index=mobile_opts.index(sanitize_selectbox_value(st.session_state.active_filters.get("has_mobile", "All"), mobile_opts, "All")))
 
                 with st.expander("Smart Follow-Up", expanded=False):
                     contact_status_opts = ["All", "Not Contacted", "Contacted"]
@@ -4207,18 +4235,18 @@ with st.sidebar:
                     contact_status = st.selectbox(
                         "Contact Status",
                         contact_status_opts,
-                        index=contact_status_opts.index(st.session_state.active_filters.get("contact_status", "All")),
+                        index=contact_status_opts.index(sanitize_selectbox_value(st.session_state.active_filters.get("contact_status", "All"), contact_status_opts, "All")),
                         help="Uses uploaded candidate Street List and Walk Sheet results.",
                     )
                     global_nh = st.selectbox(
                         "Not Home",
                         global_yes_no_opts,
-                        index=global_yes_no_opts.index(st.session_state.active_filters.get("global_nh", "All")),
+                        index=global_yes_no_opts.index(sanitize_selectbox_value(st.session_state.active_filters.get("global_nh", "All"), global_yes_no_opts, "All")),
                     )
                     global_follow_up = st.selectbox(
                         "Follow-Up",
                         global_yes_no_opts,
-                        index=global_yes_no_opts.index(st.session_state.active_filters.get("global_follow_up", "All")),
+                        index=global_yes_no_opts.index(sanitize_selectbox_value(st.session_state.active_filters.get("global_follow_up", "All"), global_yes_no_opts, "All")),
                     )
                     current_support = st.session_state.active_filters.get("global_support_level", "All")
                     if current_support not in support_level_opts:
@@ -4322,7 +4350,8 @@ with st.sidebar:
                     load_col, delete_col = st.columns(2, gap="small")
                     with load_col:
                         if st.button("Load Universe", use_container_width=True, key="load_sidebar_universe"):
-                            st.session_state.active_filters = universe_info.get("filters", {})
+                            loaded_filters = universe_info.get("filters", {}) or {}
+                            st.session_state.active_filters = loaded_filters
                             st.session_state.filters_applied = False
                             st.session_state.workspace_mode = "universe"
                             st.session_state.lookup_view_active = False
