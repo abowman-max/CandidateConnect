@@ -3345,6 +3345,9 @@ def get_lookup_selected_row(results_df: pd.DataFrame):
     return results_df.iloc[0]
 
 
+def _lookup_norm_key(value) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value).strip().lower())
+
 def get_lookup_value(row, candidates, formatter=None) -> str:
     index_map = {}
     try:
@@ -3353,6 +3356,7 @@ def get_lookup_value(row, candidates, formatter=None) -> str:
             index_map[actual_str] = actual_col
             index_map[actual_str.strip().lower()] = actual_col
             index_map[actual_str.replace("_", "").replace(" ", "").strip().lower()] = actual_col
+            index_map[_lookup_norm_key(actual_str)] = actual_col
     except Exception:
         pass
 
@@ -3361,6 +3365,7 @@ def get_lookup_value(row, candidates, formatter=None) -> str:
             col,
             str(col).strip().lower(),
             str(col).replace("_", "").replace(" ", "").strip().lower(),
+            _lookup_norm_key(col),
         ]
         actual_col = None
         for key in possible_keys:
@@ -3378,6 +3383,47 @@ def get_lookup_value(row, candidates, formatter=None) -> str:
                 rendered = normalize_export_text(value)
             if normalize_export_text(rendered) != "":
                 return rendered
+    return ""
+
+def get_lookup_dob(row) -> str:
+    direct = get_lookup_value(
+        row,
+        [
+            "DOB", "D_O_B", "Date of Birth", "DateOfBirth", "Birth Date", "BirthDate",
+            "Birth Dt", "BirthDt", "Date Birth", "DateBirth", "Dob"
+        ],
+        formatter=format_lookup_date,
+    )
+    if normalize_export_text(direct):
+        return direct
+
+    try:
+        for actual_col in row.index:
+            norm = _lookup_norm_key(actual_col)
+            if norm in {"dob", "dateofbirth", "birthdate", "birthdt", "datebirth"} or ("birth" in norm and "date" in norm):
+                value = format_lookup_date(row.get(actual_col))
+                if normalize_export_text(value):
+                    return value
+    except Exception:
+        pass
+    return ""
+
+def get_lookup_registered_party(row) -> str:
+    direct = get_lookup_value(
+        row,
+        ["Registered Party", "RegisteredParty", "Party", "Registration Party", "Voter Party"]
+    )
+    if normalize_export_text(direct):
+        return direct
+    try:
+        for actual_col in row.index:
+            norm = _lookup_norm_key(actual_col)
+            if norm in {"party", "registeredparty", "registrationparty", "voterparty"}:
+                value = normalize_export_text(row.get(actual_col))
+                if value:
+                    return value
+    except Exception:
+        pass
     return ""
 
 
@@ -3680,11 +3726,11 @@ def build_voter_report_pdf_bytes(row) -> bytes:
     c.drawString(mid_x, top_y, "Voter Snapshot")
     mid_end_y = top_y - 18
     for label, value in [
-        ("DOB", get_lookup_value(row, ["DOB", "Date of Birth", "DateOfBirth", "Birth Date", "BirthDate"], formatter=format_lookup_date)),
+        ("DOB", get_lookup_dob(row)),
         ("Reg Date", get_lookup_value(row, ["RegistrationDate", "Registration Date"], formatter=format_lookup_date)),
         ("Last Vote", get_lookup_value(row, ["Last Vote", "LastVote"], formatter=format_lookup_date) or get_lookup_value(row, ["Last Vote", "LastVote"])),
         ("Last Change", get_lookup_value(row, ["Last Change Date", "LastChangeDate"], formatter=format_lookup_date) or get_lookup_value(row, ["Last Change", "LastChange"])),
-        ("Registered Party", get_lookup_value(row, ["Party", "Registered Party"])),
+        ("Registered Party", get_lookup_registered_party(row)),
         ("Gender", get_lookup_value(row, ["Gender", "Sex"])),
         ("Age", get_lookup_value(row, ["Age"], formatter=lambda v: normalize_numeric_string(v))),
         ("PA ID", get_lookup_value(row, ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "VoterID"], formatter=lambda v: normalize_numeric_string(v))),
@@ -3692,7 +3738,7 @@ def build_voter_report_pdf_bytes(row) -> bytes:
         c.setFont("Helvetica-Bold", 9)
         c.drawString(mid_x, mid_end_y, f"{label}:")
         c.setFont("Helvetica", 9)
-        c.drawString(mid_x + 72, mid_end_y, normalize_export_text(value) or "—")
+        c.drawString(mid_x + 88, mid_end_y, normalize_export_text(value) or "—")
         mid_end_y -= 14
 
     c.setFont("Helvetica-Bold", 10)
@@ -3889,9 +3935,9 @@ def render_voter_lookup_results():
         detail_cols = st.columns(2, gap="medium")
         with detail_cols[0]:
             render_lookup_field_block("Voter Details", [
-                ("Date of Birth", get_lookup_value(selected_row, ["DOB", "Date of Birth", "DateOfBirth", "Birth Date", "BirthDate"], formatter=format_lookup_date)),
+                ("Date of Birth", get_lookup_dob(selected_row)),
                 ("Registration Date", get_lookup_value(selected_row, ["RegistrationDate", "Registration Date"], formatter=format_lookup_date)),
-                ("Registered Party", get_lookup_value(selected_row, ["Party", "Registered Party"])),
+                ("Registered Party", get_lookup_registered_party(selected_row)),
                 ("Last Vote", get_lookup_value(selected_row, ["Last Vote", "LastVote"], formatter=format_lookup_date) or get_lookup_value(selected_row, ["Last Vote", "LastVote"])),
                 ("Last Change", get_lookup_value(selected_row, ["Last Change", "LastChange"])),
                 ("Last Change Date", get_lookup_value(selected_row, ["Last Change Date", "LastChangeDate"], formatter=format_lookup_date)),
