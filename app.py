@@ -3589,18 +3589,22 @@ def build_voter_report_pdf_bytes(row) -> bytes:
     c.drawString(title_x, header_top - 20, "Voter Lookup Report")
     c.drawString(title_x, header_top - 31, datetime.now().strftime("Generated %m/%d/%Y %I:%M %p"))
 
-    powered_x = width - 140
+    logo_width = 56
+    logo_height = 18
+    logo_x = width - margin_x - logo_width
+    logo_center_x = logo_x + (logo_width / 2)
+
     c.setFont("Helvetica-Bold", 9)
     c.setFillColor(colors.HexColor("#4B5563"))
-    c.drawString(powered_x, header_top - 6, "Powered By")
+    c.drawCentredString(logo_center_x, header_top - 6, "Powered By")
     if TSS_LOGO.exists():
         try:
             c.drawImage(
                 ImageReader(str(TSS_LOGO)),
-                powered_x + 44,
+                logo_x,
                 header_top - 26,
-                width=56,
-                height=18,
+                width=logo_width,
+                height=logo_height,
                 preserveAspectRatio=True,
                 mask='auto',
             )
