@@ -3907,10 +3907,18 @@ def render_voter_lookup_results():
                     if is_selected_member:
                         st.caption("Current")
                     else:
-                        member_key = member_row.get("_LookupRowKey", "")
-                        if st.button("Open", key=f"hh_open_{member_key}_{idx}", use_container_width=True):
-                            st.session_state["lookup_selected_key"] = member_key
-                            st.rerun()
+                        member_pa_id = normalize_numeric_string(
+                            get_lookup_value(
+                                member_row,
+                                ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "VoterID"]
+                            )
+                        )
+                        member_button_key = member_pa_id or f"member_{idx}"
+                        if st.button("Open", key=f"hh_open_{member_button_key}_{idx}", use_container_width=True):
+                            if member_pa_id:
+                                st.session_state["lookup_household_open_pa_id"] = member_pa_id
+                                st.session_state.workspace_mode = "lookup"
+                                st.rerun()
 
         render_lookup_vote_history_tables(selected_row)
 
@@ -3925,6 +3933,13 @@ def render_lookup_sidebar(active_filters, columns):
         st.session_state["lookup_last_query"] = ""
         st.session_state["lookup_view_active"] = False
         st.session_state["lookup_query_input"] = ""
+
+    pending_household_open_query = normalize_numeric_string(st.session_state.pop("lookup_household_open_pa_id", ""))
+    if pending_household_open_query:
+        st.session_state["lookup_query_input"] = pending_household_open_query
+        st.session_state["lookup_query"] = pending_household_open_query
+        st.session_state["lookup_last_query"] = pending_household_open_query
+        st.session_state["lookup_selected_key"] = ""
 
     with st.expander("Voter Lookup", expanded=st.session_state.get("workspace_mode", "universe") == "lookup"):
         st.caption("Search the full statewide active voter file by name, county, address, PA ID, phone, or email.")
@@ -3947,13 +3962,29 @@ def render_lookup_sidebar(active_filters, columns):
             st.session_state.workspace_mode = "lookup"
             st.rerun()
 
-        if search_clicked and lookup_query.strip():
+        run_lookup_search = (search_clicked or bool(pending_household_open_query)) and lookup_query.strip()
+
+        if run_lookup_search:
             with st.spinner("Searching voter detail shards..."):
                 results_df = search_voters_for_lookup(active_filters, lookup_query.strip(), limit=int(result_limit), use_current_filters=False)
             st.session_state["lookup_query"] = lookup_query.strip()
             st.session_state["lookup_last_query"] = lookup_query.strip()
             st.session_state["lookup_results_records"] = results_df.to_dict("records")
-            st.session_state["lookup_selected_key"] = results_df.iloc[0]["_LookupRowKey"] if not results_df.empty else ""
+            if pending_household_open_query and not results_df.empty:
+                selected_match = None
+                for _, _row in results_df.iterrows():
+                    row_pa_id = normalize_numeric_string(
+                        get_lookup_value(
+                            _row,
+                            ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "VoterID"]
+                        )
+                    )
+                    if row_pa_id == pending_household_open_query:
+                        selected_match = _row["_LookupRowKey"]
+                        break
+                st.session_state["lookup_selected_key"] = selected_match or results_df.iloc[0]["_LookupRowKey"]
+            else:
+                st.session_state["lookup_selected_key"] = results_df.iloc[0]["_LookupRowKey"] if not results_df.empty else ""
             st.session_state["lookup_view_active"] = True
             st.session_state.workspace_mode = "lookup"
             st.rerun()
