@@ -3134,6 +3134,19 @@ def format_lookup_phone(value) -> str:
         return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
     return normalize_export_text(value)
 
+def format_lookup_zip(value) -> str:
+    raw = normalize_export_text(value)
+    if not raw:
+        return ""
+    if re.fullmatch(r"\d+\.0+", raw):
+        raw = raw.split(".")[0]
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 9:
+        return f"{digits[:5]}-{digits[5:]}"
+    if len(digits) >= 5:
+        return digits[:5]
+    return raw
+
 
 def get_detail_columns(detail_paths):
     con = get_conn()
