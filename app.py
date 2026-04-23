@@ -3346,9 +3346,32 @@ def get_lookup_selected_row(results_df: pd.DataFrame):
 
 
 def get_lookup_value(row, candidates, formatter=None) -> str:
+    index_map = {}
+    try:
+        for actual_col in row.index:
+            actual_str = str(actual_col)
+            index_map[actual_str] = actual_col
+            index_map[actual_str.strip().lower()] = actual_col
+            index_map[actual_str.replace("_", "").replace(" ", "").strip().lower()] = actual_col
+    except Exception:
+        pass
+
     for col in candidates:
-        if col in row.index:
-            value = row.get(col)
+        possible_keys = [
+            col,
+            str(col).strip().lower(),
+            str(col).replace("_", "").replace(" ", "").strip().lower(),
+        ]
+        actual_col = None
+        for key in possible_keys:
+            if key in row.index:
+                actual_col = key
+                break
+            if key in index_map:
+                actual_col = index_map[key]
+                break
+        if actual_col is not None:
+            value = row.get(actual_col)
             if formatter is not None:
                 rendered = formatter(value)
             else:
@@ -3657,11 +3680,11 @@ def build_voter_report_pdf_bytes(row) -> bytes:
     c.drawString(mid_x, top_y, "Voter Snapshot")
     mid_end_y = top_y - 18
     for label, value in [
-        ("DOB", get_lookup_value(row, ["DOB", "DateOfBirth", "Birth Date"], formatter=format_lookup_date)),
+        ("DOB", get_lookup_value(row, ["DOB", "Date of Birth", "DateOfBirth", "Birth Date", "BirthDate"], formatter=format_lookup_date)),
         ("Reg Date", get_lookup_value(row, ["RegistrationDate", "Registration Date"], formatter=format_lookup_date)),
         ("Last Vote", get_lookup_value(row, ["Last Vote", "LastVote"], formatter=format_lookup_date) or get_lookup_value(row, ["Last Vote", "LastVote"])),
         ("Last Change", get_lookup_value(row, ["Last Change Date", "LastChangeDate"], formatter=format_lookup_date) or get_lookup_value(row, ["Last Change", "LastChange"])),
-        ("Party", get_lookup_value(row, ["Party"])),
+        ("Registered Party", get_lookup_value(row, ["Party", "Registered Party"])),
         ("Gender", get_lookup_value(row, ["Gender", "Sex"])),
         ("Age", get_lookup_value(row, ["Age"], formatter=lambda v: normalize_numeric_string(v))),
         ("PA ID", get_lookup_value(row, ["PA ID Number", "PA_ID_Number", "PA ID", "StateVoterID", "VoterID"], formatter=lambda v: normalize_numeric_string(v))),
@@ -3866,8 +3889,9 @@ def render_voter_lookup_results():
         detail_cols = st.columns(2, gap="medium")
         with detail_cols[0]:
             render_lookup_field_block("Voter Details", [
-                ("Date of Birth", get_lookup_value(selected_row, ["DOB", "DateOfBirth", "Birth Date"], formatter=format_lookup_date)),
+                ("Date of Birth", get_lookup_value(selected_row, ["DOB", "Date of Birth", "DateOfBirth", "Birth Date", "BirthDate"], formatter=format_lookup_date)),
                 ("Registration Date", get_lookup_value(selected_row, ["RegistrationDate", "Registration Date"], formatter=format_lookup_date)),
+                ("Registered Party", get_lookup_value(selected_row, ["Party", "Registered Party"])),
                 ("Last Vote", get_lookup_value(selected_row, ["Last Vote", "LastVote"], formatter=format_lookup_date) or get_lookup_value(selected_row, ["Last Vote", "LastVote"])),
                 ("Last Change", get_lookup_value(selected_row, ["Last Change", "LastChange"])),
                 ("Last Change Date", get_lookup_value(selected_row, ["Last Change Date", "LastChangeDate"], formatter=format_lookup_date)),
