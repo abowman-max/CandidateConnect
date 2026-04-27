@@ -4735,8 +4735,7 @@ if "lookup_query_input" not in st.session_state:
     st.session_state.lookup_query_input = st.session_state.get("lookup_query", "")
 
 with st.sidebar:
-    st.header("Candidate Connect DEV")
-    st.warning("DEV VERSION - testing only")
+    st.header("Candidate Connect")
     st.markdown('<div class="sidebar-note">Load voter data first, then open Create Universe or Voter Lookup below.</div>', unsafe_allow_html=True)
 
     if not st.session_state.data_loaded:
