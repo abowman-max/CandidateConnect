@@ -421,6 +421,37 @@ def prepare_db(local_paths):
 def sql_literal_list(values):
     return ", ".join(["?"] * len(values))
 
+DISTRICT_GEO_COLUMNS = {"USC", "STS", "STH"}
+
+def normalize_district_value(value):
+    """Display numeric district IDs like 1.0 as 1, while leaving real text codes alone."""
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    text = str(value).strip()
+    if text.lower() in {"", "nan", "none"}:
+        return ""
+    if re.fullmatch(r"\d+\.0+", text):
+        return text.split(".")[0]
+    return text
+
+def district_display_expr(column: str) -> str:
+    qcol = quote_ident(column)
+    raw = f"trim(coalesce(cast({qcol} as varchar), ''))"
+    return (
+        f"CASE "
+        f"WHEN regexp_matches({raw}, '^\\d+\\.0+$') "
+        f"THEN regexp_replace({raw}, '\\.0+$', '') "
+        f"ELSE {raw} END"
+    )
+
+def geo_display_expr(column: str) -> str:
+    return district_display_expr(column) if column in DISTRICT_GEO_COLUMNS else quote_ident(column)
+
 def current_filter_clause(active, columns):
     where = ["_Status = 'A'"]
     params = []
@@ -428,7 +459,11 @@ def current_filter_clause(active, columns):
     for col in geo_cols:
         picked = active.get(col, [])
         if picked:
-            where.append(f"{quote_ident(col)} IN ({sql_literal_list(picked)})")
+            if col in DISTRICT_GEO_COLUMNS:
+                picked = [normalize_district_value(v) for v in picked]
+                where.append(f"{district_display_expr(col)} IN ({sql_literal_list(picked)})")
+            else:
+                where.append(f"{quote_ident(col)} IN ({sql_literal_list(picked)})")
             params.extend(picked)
     if active.get("party_pick"):
         picked = active["party_pick"]
@@ -525,7 +560,7 @@ def current_filter_clause(active, columns):
 
 def get_distinct_options(column: str, label_expr: str | None = None):
     con = get_conn()
-    expr = label_expr or quote_ident(column)
+    expr = label_expr or geo_display_expr(column)
     df = con.execute(
         f"""
         SELECT {expr} AS value
@@ -535,7 +570,11 @@ def get_distinct_options(column: str, label_expr: str | None = None):
         ORDER BY 1
         """
     ).df()
-    return [str(v) for v in df["value"].tolist() if str(v).strip() != ""]
+    values = [str(v).strip() for v in df["value"].tolist() if str(v).strip() != ""]
+    if column in DISTRICT_GEO_COLUMNS:
+        values = [normalize_district_value(v) for v in values if normalize_district_value(v) != ""]
+        return sorted(set(values), key=lambda v: (0, int(v)) if re.fullmatch(r"\d+", v) else (1, v))
+    return values
 
 def get_basic_options(columns):
     options = {}
@@ -618,7 +657,7 @@ def query_area_summary(active, columns, area_col):
     return con.execute(
         f"""
         SELECT
-            coalesce(cast({quote_ident(area_col)} as varchar), '(Blank)') AS "{area_col}",
+            coalesce(nullif({geo_display_expr(area_col)}, ''), '(Blank)') AS "{area_col}",
             count(*) AS Individuals,
             (
                 count(DISTINCT _HouseholdKey) FILTER (WHERE _HouseholdKey IS NOT NULL AND _HouseholdKey <> '')
@@ -642,10 +681,11 @@ def build_statewide_summary_report_bytes(active_filters, columns):
         if group_col not in columns:
             return pd.DataFrame(columns=[label, "Voters", "Households", "Democrats", "Republicans", "Others", "Male", "Female", "Unknown Gender", "MIB Applied", "MIB Declined", "Did Not Apply", "Not Sent", "Not Voted", "Voted", "Permanent Mail", "Emails", "Mobiles"])
         qcol = quote_ident(group_col)
+        display_col = geo_display_expr(group_col)
         return con.execute(
             f"""
             SELECT
-                coalesce(cast({qcol} as varchar), '(Blank)') AS "{label}",
+                coalesce(nullif({display_col}, ''), '(Blank)') AS "{label}",
                 count(*) AS "Voters",
                 (
                     count(DISTINCT _HouseholdKey) FILTER (WHERE _HouseholdKey IS NOT NULL AND _HouseholdKey <> '')
@@ -3154,11 +3194,16 @@ def sanitize_multiselect_defaults(default_values, option_values):
     if not isinstance(default_values, (list, tuple, set)):
         default_values = [default_values]
     option_text = {str(v).strip(): v for v in option_values or []}
+    normalized_option_text = {normalize_district_value(v): v for v in option_values or []}
     cleaned = []
     for value in default_values:
         key = str(value).strip()
         if key in option_text:
             cleaned.append(option_text[key])
+        else:
+            normalized_key = normalize_district_value(value)
+            if normalized_key in normalized_option_text:
+                cleaned.append(normalized_option_text[normalized_key])
     return cleaned
 
 def sanitize_selectbox_value(current_value, option_values, fallback=None):
