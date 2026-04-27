@@ -316,8 +316,9 @@ def build_view_sql(columns, local_paths):
     if party_col:
         exprs.append(
             f"""case
-                when upper(trim(coalesce(cast({q(party_col)} as varchar), ''))) in ('', 'NONE', 'NAN', 'U') then 'O'
-                else upper(trim(cast({q(party_col)} as varchar)))
+                when upper(trim(coalesce(cast({q(party_col)} as varchar), ''))) = 'R' then 'R'
+                when upper(trim(coalesce(cast({q(party_col)} as varchar), ''))) = 'D' then 'D'
+                else 'O'
             end as _PartyNorm"""
         )
     else:
@@ -581,7 +582,7 @@ def get_basic_options(columns):
     geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in columns]
     for col in geo_cols:
         options[col] = get_distinct_options(col)
-    options["party_vals"] = get_distinct_options("_PartyNorm", "_PartyNorm") if "Party" in columns else []
+    options["party_vals"] = get_distinct_options("_PartyNorm", "_PartyNorm")
     options["gender_vals"] = get_distinct_options("_Gender", "_Gender")
     options["age_range_vals"] = get_distinct_options("_AgeRange", "_AgeRange")
     options["hh_party_vals"] = get_distinct_options("HH-Party") if "HH-Party" in columns else []
@@ -1108,8 +1109,9 @@ def build_detail_export_sql(detail_paths, active_filters):
     if party_col:
         exprs.append(
             f"""case
-                when upper(trim(coalesce(cast({q(party_col)} as varchar), ''))) in ('', 'NONE', 'NAN', 'U') then 'O'
-                else upper(trim(cast({q(party_col)} as varchar)))
+                when upper(trim(coalesce(cast({q(party_col)} as varchar), ''))) = 'R' then 'R'
+                when upper(trim(coalesce(cast({q(party_col)} as varchar), ''))) = 'D' then 'D'
+                else 'O'
             end as _PartyNorm"""
         )
     else:
