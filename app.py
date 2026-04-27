@@ -316,8 +316,8 @@ def build_view_sql(columns, local_paths):
     if party_col:
         exprs.append(
             f"""case
-                when upper(trim(coalesce(cast({q(party_col)} as varchar), ''))) = 'R' then 'R'
                 when upper(trim(coalesce(cast({q(party_col)} as varchar), ''))) = 'D' then 'D'
+                when upper(trim(coalesce(cast({q(party_col)} as varchar), ''))) = 'R' then 'R'
                 else 'O'
             end as _PartyNorm"""
         )
@@ -422,36 +422,27 @@ def prepare_db(local_paths):
 def sql_literal_list(values):
     return ", ".join(["?"] * len(values))
 
-DISTRICT_GEO_COLUMNS = {"USC", "STS", "STH"}
-
-def normalize_district_value(value):
-    """Display numeric district IDs like 1.0 as 1, while leaving real text codes alone."""
-    if value is None:
+def clean_district_display_value(value) -> str:
+    """Display USC/STS/STH without trailing .0 while preserving real text values."""
+    raw = normalize_export_text(value) if "normalize_export_text" in globals() else str(value).strip()
+    if raw.lower() in {"", "nan", "none", "null"}:
         return ""
     try:
-        if pd.isna(value):
-            return ""
+        f = float(raw)
+        if f.is_integer():
+            return str(int(f))
     except Exception:
         pass
-    text = str(value).strip()
-    if text.lower() in {"", "nan", "none"}:
-        return ""
-    if re.fullmatch(r"\d+\.0+", text):
-        return text.split(".")[0]
-    return text
+    return re.sub(r"\.0+$", "", raw)
 
-def district_display_expr(column: str) -> str:
-    qcol = quote_ident(column)
-    raw = f"trim(coalesce(cast({qcol} as varchar), ''))"
-    return (
-        f"CASE "
-        f"WHEN regexp_matches({raw}, '^\\d+\\.0+$') "
-        f"THEN regexp_replace({raw}, '\\.0+$', '') "
-        f"ELSE {raw} END"
-    )
 
-def geo_display_expr(column: str) -> str:
-    return district_display_expr(column) if column in DISTRICT_GEO_COLUMNS else quote_ident(column)
+def district_sort_key(value):
+    s = clean_district_display_value(value)
+    try:
+        return (0, int(float(s)))
+    except Exception:
+        return (1, s)
+
 
 def current_filter_clause(active, columns):
     where = ["_Status = 'A'"]
@@ -460,9 +451,8 @@ def current_filter_clause(active, columns):
     for col in geo_cols:
         picked = active.get(col, [])
         if picked:
-            if col in DISTRICT_GEO_COLUMNS:
-                picked = [normalize_district_value(v) for v in picked]
-                where.append(f"{district_display_expr(col)} IN ({sql_literal_list(picked)})")
+            if col in ["USC", "STS", "STH"]:
+                where.append(f"regexp_replace(trim(cast({quote_ident(col)} as varchar)), '\\.0+$', '') IN ({sql_literal_list(picked)})")
             else:
                 where.append(f"{quote_ident(col)} IN ({sql_literal_list(picked)})")
             params.extend(picked)
@@ -561,7 +551,7 @@ def current_filter_clause(active, columns):
 
 def get_distinct_options(column: str, label_expr: str | None = None):
     con = get_conn()
-    expr = label_expr or geo_display_expr(column)
+    expr = label_expr or quote_ident(column)
     df = con.execute(
         f"""
         SELECT {expr} AS value
@@ -571,18 +561,19 @@ def get_distinct_options(column: str, label_expr: str | None = None):
         ORDER BY 1
         """
     ).df()
-    values = [str(v).strip() for v in df["value"].tolist() if str(v).strip() != ""]
-    if column in DISTRICT_GEO_COLUMNS:
-        values = [normalize_district_value(v) for v in values if normalize_district_value(v) != ""]
-        return sorted(set(values), key=lambda v: (0, int(v)) if re.fullmatch(r"\d+", v) else (1, v))
-    return values
+    return [str(v) for v in df["value"].tolist() if str(v).strip() != ""]
 
 def get_basic_options(columns):
     options = {}
     geo_cols = [c for c in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"] if c in columns]
     for col in geo_cols:
-        options[col] = get_distinct_options(col)
-    options["party_vals"] = get_distinct_options("_PartyNorm", "_PartyNorm")
+        if col in ["USC", "STS", "STH"]:
+            vals = get_distinct_options(col, f"regexp_replace(trim(cast({quote_ident(col)} as varchar)), '\\.0+$', '')")
+            vals = [clean_district_display_value(v) for v in vals if clean_district_display_value(v)]
+            options[col] = sorted(set(vals), key=district_sort_key)
+        else:
+            options[col] = get_distinct_options(col)
+    options["party_vals"] = get_distinct_options("_PartyNorm", "_PartyNorm") if "Party" in columns else []
     options["gender_vals"] = get_distinct_options("_Gender", "_Gender")
     options["age_range_vals"] = get_distinct_options("_AgeRange", "_AgeRange")
     options["hh_party_vals"] = get_distinct_options("HH-Party") if "HH-Party" in columns else []
@@ -658,7 +649,7 @@ def query_area_summary(active, columns, area_col):
     return con.execute(
         f"""
         SELECT
-            coalesce(nullif({geo_display_expr(area_col)}, ''), '(Blank)') AS "{area_col}",
+            coalesce(cast({quote_ident(area_col)} as varchar), '(Blank)') AS "{area_col}",
             count(*) AS Individuals,
             (
                 count(DISTINCT _HouseholdKey) FILTER (WHERE _HouseholdKey IS NOT NULL AND _HouseholdKey <> '')
@@ -682,11 +673,10 @@ def build_statewide_summary_report_bytes(active_filters, columns):
         if group_col not in columns:
             return pd.DataFrame(columns=[label, "Voters", "Households", "Democrats", "Republicans", "Others", "Male", "Female", "Unknown Gender", "MIB Applied", "MIB Declined", "Did Not Apply", "Not Sent", "Not Voted", "Voted", "Permanent Mail", "Emails", "Mobiles"])
         qcol = quote_ident(group_col)
-        display_col = geo_display_expr(group_col)
         return con.execute(
             f"""
             SELECT
-                coalesce(nullif({display_col}, ''), '(Blank)') AS "{label}",
+                coalesce(cast({qcol} as varchar), '(Blank)') AS "{label}",
                 count(*) AS "Voters",
                 (
                     count(DISTINCT _HouseholdKey) FILTER (WHERE _HouseholdKey IS NOT NULL AND _HouseholdKey <> '')
@@ -1109,8 +1099,8 @@ def build_detail_export_sql(detail_paths, active_filters):
     if party_col:
         exprs.append(
             f"""case
-                when upper(trim(coalesce(cast({q(party_col)} as varchar), ''))) = 'R' then 'R'
                 when upper(trim(coalesce(cast({q(party_col)} as varchar), ''))) = 'D' then 'D'
+                when upper(trim(coalesce(cast({q(party_col)} as varchar), ''))) = 'R' then 'R'
                 else 'O'
             end as _PartyNorm"""
         )
@@ -3196,16 +3186,11 @@ def sanitize_multiselect_defaults(default_values, option_values):
     if not isinstance(default_values, (list, tuple, set)):
         default_values = [default_values]
     option_text = {str(v).strip(): v for v in option_values or []}
-    normalized_option_text = {normalize_district_value(v): v for v in option_values or []}
     cleaned = []
     for value in default_values:
         key = str(value).strip()
         if key in option_text:
             cleaned.append(option_text[key])
-        else:
-            normalized_key = normalize_district_value(value)
-            if normalized_key in normalized_option_text:
-                cleaned.append(normalized_option_text[normalized_key])
     return cleaned
 
 def sanitize_selectbox_value(current_value, option_values, fallback=None):
@@ -4152,6 +4137,576 @@ def render_lookup_sidebar(active_filters, columns):
             st.rerun()
 
 
+
+
+# -----------------------------
+# Area Intelligence (Phase 2)
+# -----------------------------
+@st.cache_data(show_spinner=False)
+def load_area_precinct_summary() -> pd.DataFrame:
+    """Load the Area Intelligence precinct summary.
+
+    DEV-safe version: load the local repo copy first.
+    This avoids Cloudflare R2 public-read/403 issues for the Area Intelligence CSV.
+    If no local copy exists, it will still try the R2 public URL as a backup.
+    """
+    local_path = Path("area_intelligence") / "precinct_summary.csv"
+    errors = []
+
+    # 1) Preferred for DEV: local file committed/uploaded with the app repo.
+    try:
+        if local_path.exists():
+            return pd.read_csv(local_path, dtype=str).fillna("")
+        errors.append(f"Local file missing: {local_path}")
+    except Exception as e:
+        errors.append(f"Local: {e}")
+
+    # 2) Backup: R2 public URL.
+    try:
+        url = r2_public_url("area_intelligence/precinct_summary.csv")
+        return pd.read_csv(url, dtype=str).fillna("")
+    except Exception as e:
+        errors.append(f"R2: {e}")
+
+    raise FileNotFoundError(
+        "Could not load area_intelligence/precinct_summary.csv. "
+        "Put precinct_summary.csv in the app folder under area_intelligence/. "
+        + " | ".join(errors)
+    )
+
+
+def _area_num(row, col, default=0.0):
+    try:
+        return float(str(row.get(col, default)).replace(",", "") or default)
+    except Exception:
+        return float(default)
+
+
+def _metric_html(label: str, value: str, note: str = "") -> str:
+    note_html = f'<div class="tiny-muted">{note}</div>' if note else ""
+    return f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div>{note_html}</div>'
+
+
+def _aggregate_area_profile(profile_df: pd.DataFrame) -> dict:
+    """Aggregate one or more precinct rows into a single area profile."""
+    numeric_cols = [
+        "Total_Voters", "Dem_Voters", "Rep_Voters", "Other_Voters",
+        "Male_Voters", "Female_Voters", "Unknown_Gender",
+        "New_Registrations", "Mail_Applications", "Mail_Applications_Total", "Mail_Applications_Approved", "Mail_Applications_Declined",
+        "Mail_Ballots_Sent", "Mail_Ballots_Returned", "Mail_Ballots_Outstanding", "Mail_Voters"
+    ]
+    out = {}
+    work = profile_df.copy()
+    for col in numeric_cols + ["Avg_Age"]:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce").fillna(0)
+        else:
+            work[col] = 0
+
+    for col in numeric_cols:
+        out[col] = float(work[col].sum())
+
+    total = out.get("Total_Voters", 0)
+    if total > 0 and "Avg_Age" in work.columns:
+        out["Avg_Age"] = float((work["Avg_Age"] * work["Total_Voters"]).sum() / total)
+    else:
+        out["Avg_Age"] = 0.0
+
+    out["Precinct_Count"] = int(len(work))
+    return out
+
+
+def _strategy_badge(text: str, tone: str = "neutral") -> str:
+    colors = {
+        "good": ("#e8f5e9", "#1b5e20"),
+        "watch": ("#fff8e1", "#8a5a00"),
+        "priority": ("#ffebee", "#b71c1c"),
+        "info": ("#e3f2fd", "#0d47a1"),
+        "neutral": ("#f5f5f5", "#374151"),
+    }
+    bg, fg = colors.get(tone, colors["neutral"])
+    return (
+        f'<span style="display:inline-block; padding:6px 10px; margin:3px 5px 3px 0; '
+        f'border-radius:999px; background:{bg}; color:{fg}; font-size:12px; font-weight:800;">{text}</span>'
+    )
+
+
+def _build_strategy_summary(total, dem, rep, other, new_reg, mail_apps, mail_returned, mail_outstanding, geo_issues):
+    total = float(total or 0)
+    dem_pct = 0 if total <= 0 else dem / total * 100
+    rep_pct = 0 if total <= 0 else rep / total * 100
+    new_reg_pct = 0 if total <= 0 else new_reg / total * 100
+    app_pct = 0 if total <= 0 else mail_apps / total * 100
+    return_rate = 0 if mail_apps <= 0 else mail_returned / mail_apps * 100
+    outstanding_rate = 0 if mail_apps <= 0 else mail_outstanding / mail_apps * 100
+
+    badges = []
+    notes = []
+
+    if rep_pct >= 55:
+        badges.append(("Republican Advantage Area", "good"))
+        notes.append("GOP-friendly geography. Strong area for base turnout and mail ballot chase.")
+    elif dem_pct >= 55:
+        badges.append(("Democratic Advantage Area", "priority"))
+        notes.append("Democratic-leaning geography. Use for opposition awareness and selective persuasion.")
+    elif abs(rep_pct - dem_pct) <= 8:
+        badges.append(("Persuasion Opportunity", "watch"))
+        notes.append("Party balance is close enough to justify persuasion and turnout monitoring.")
+    else:
+        badges.append(("Mixed Performance Area", "info"))
+        notes.append("Not heavily one-sided. Review party mix and turnout behavior before assigning resources.")
+
+    if mail_apps > 0:
+        if return_rate < 35:
+            badges.append(("Low Mail Return - Chase Priority", "priority"))
+            notes.append("Mail ballot requests exist, but return rate is low. Prioritize chase calls, texts, and door contact.")
+        elif return_rate < 65:
+            badges.append(("Medium Mail Return - Watch", "watch"))
+            notes.append("Mail return is moving but not complete. Keep this area on the chase list.")
+        else:
+            badges.append(("High Mail Return", "good"))
+            notes.append("Many requested ballots have already returned. Reduce chase pressure on returned voters.")
+    else:
+        badges.append(("Low Mail Application Universe", "info"))
+        notes.append("Few or no mail applications are currently visible. Consider application-growth messaging if strategically useful.")
+
+    if mail_outstanding > 0:
+        badges.append((f"{int(mail_outstanding):,} Outstanding Ballots", "priority" if outstanding_rate >= 40 else "watch"))
+
+    if new_reg_pct >= 2:
+        badges.append(("New Registration Watch", "watch"))
+        notes.append("New registrations are elevated. Check whether they need education, ID, or first-time voter messaging.")
+
+    if geo_issues > 0:
+        badges.append(("Geography Update Watch", "info"))
+        notes.append("Some rows required geography repair or reflect newer election geography than the base voter file.")
+
+    return badges, notes, return_rate, outstanding_rate, app_pct
+
+
+
+# Area Intelligence table renderer: centered values, comma formatting, sticky headers/label columns.
+def _ai_format_cell_value(value, col_name=""):
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    text = str(value).strip()
+    if text.lower() in {"nan", "none", "nat"}:
+        return ""
+    if text == "":
+        return ""
+    if "%" in text or text == "—":
+        return text
+    try:
+        cleaned = text.replace(",", "")
+        num = float(cleaned)
+        if col_name in {"Avg_Age", "Dem_%", "Rep_%", "Other_%", "Mail_Return_%", "Outstanding_%"}:
+            return f"{num:,.1f}".rstrip("0").rstrip(".")
+        if abs(num - round(num)) < 0.000001:
+            return f"{int(round(num)):,}"
+        return f"{num:,.1f}"
+    except Exception:
+        return text
+
+
+def _ai_clean_display_df(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    drop_cols = []
+    for c in out.columns:
+        name = str(c).strip()
+        if name == "" or name.lower().startswith("unnamed") or name.lower() in {"index", "level_0"}:
+            drop_cols.append(c)
+    if drop_cols:
+        out = out.drop(columns=drop_cols, errors="ignore")
+    for c in out.columns:
+        out[c] = out[c].map(lambda v, col=c: _ai_format_cell_value(v, str(col)))
+    return out
+
+
+def _ai_render_table(df, height=360, sticky_cols=None, key=""):
+    display = _ai_clean_display_df(df)
+    if display.empty:
+        st.caption("No table data available.")
+        return
+    sticky_cols = sticky_cols or []
+    cols = [str(c) for c in display.columns]
+    sticky_set = {c for c in sticky_cols if c in cols}
+    import html as _html
+    def esc(x):
+        return _html.escape(str(x))
+    sticky_positions = {cols[i]: i * 155 for i in range(min(3, len(cols))) if cols[i] in sticky_set}
+    table_id = f"ai-table-{key}" if key else "ai-table"
+    css = f"""
+    <style>
+    .{table_id}-wrap {{ width:100%; max-height:{int(height)}px; overflow:auto; border:1px solid #e5e7eb; border-radius:12px; background:white; }}
+    table.{table_id} {{ border-collapse:separate; border-spacing:0; width:max-content; min-width:100%; font-size:12px; }}
+    table.{table_id} th, table.{table_id} td {{ border-right:1px solid #edf0f2; border-bottom:1px solid #edf0f2; padding:8px 10px; text-align:center !important; vertical-align:middle; white-space:nowrap; min-width:110px; }}
+    table.{table_id} th {{ position:sticky; top:0; z-index:5; background:#f8fafc; color:#24303f; font-weight:800; }}
+    table.{table_id} td {{ background:white; color:#24303f; }}
+    table.{table_id} tr:hover td {{ background:#f7fbff; }}
+    table.{table_id} .sticky-col {{ position:sticky; z-index:4; background:#ffffff; box-shadow:1px 0 0 #e5e7eb; font-weight:700; }}
+    table.{table_id} th.sticky-col {{ z-index:7; background:#f8fafc; }}
+    </style>
+    """
+    header_cells = []
+    for c in cols:
+        cls = "sticky-col" if c in sticky_set else ""
+        style = f"left:{sticky_positions.get(c, 0)}px; min-width:155px;" if c in sticky_set else ""
+        header_cells.append(f'<th class="{cls}" style="{style}">{esc(c)}</th>')
+    rows_html = []
+    for _, r in display.iterrows():
+        tds = []
+        for c in cols:
+            cls = "sticky-col" if c in sticky_set else ""
+            style = f"left:{sticky_positions.get(c, 0)}px; min-width:155px;" if c in sticky_set else ""
+            tds.append(f'<td class="{cls}" style="{style}">{esc(r[c])}</td>')
+        rows_html.append("<tr>" + "".join(tds) + "</tr>")
+    html_table = css + '<div class="{}-wrap"><table class="{}"><thead><tr>{}</tr></thead><tbody>{}</tbody></table></div>'.format(table_id, table_id, "".join(header_cells), "".join(rows_html))
+    st.markdown(html_table, unsafe_allow_html=True)
+
+def render_area_intelligence_workspace():
+    st.markdown('<div class="section-card"><div class="small-header">Area Intelligence</div><div class="tiny-muted">Phase 2 area profiles, mail program, and strategy foundation.</div></div>', unsafe_allow_html=True)
+
+    try:
+        area_df = load_area_precinct_summary()
+    except Exception as e:
+        st.error("Area Intelligence file could not be loaded.")
+        st.caption(str(e))
+        st.info("Expected file path: area_intelligence/precinct_summary.csv")
+        return
+
+    required_cols = ["County", "Municipality", "Precinct"]
+    missing = [c for c in required_cols if c not in area_df.columns]
+    if missing:
+        st.error("The precinct summary file is missing required columns: " + ", ".join(missing))
+        _ai_render_table(pd.DataFrame({"Available Columns": list(area_df.columns)}), height=300, sticky_cols=["Available Columns"], key="missingcols")
+        return
+
+    # Normalize Area Intelligence geography fields. District columns are optional,
+    # but when present they power district-level reports.
+    for col in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"]:
+        if col not in area_df.columns:
+            area_df[col] = ""
+        area_df[col] = area_df[col].astype(str).fillna("").replace({"nan": "", "None": ""}).str.strip()
+        if col in ["USC", "STS", "STH"]:
+            area_df[col] = area_df[col].map(normalize_numeric_string)
+
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="small-header">Select Area</div>', unsafe_allow_html=True)
+
+    available_levels = ["County", "Municipality", "Precinct"]
+    for _lvl in ["USC", "STS", "STH", "School District"]:
+        if _lvl in area_df.columns and any(str(x).strip() for x in area_df[_lvl].unique().tolist()):
+            available_levels.append(_lvl)
+
+    area_level = st.selectbox(
+        "Report Level",
+        available_levels,
+        index=available_levels.index("Precinct") if "Precinct" in available_levels else 0,
+        key="ai_area_level",
+        help="Choose whether this profile should summarize a county, municipality, precinct, or district."
+    )
+
+    def _district_sort_key(v):
+        text = normalize_numeric_string(v)
+        try:
+            return (0, int(float(text)), text)
+        except Exception:
+            return (1, text)
+
+    def _clean_options(series, numeric=False):
+        vals = [str(x).strip() for x in series.dropna().astype(str).tolist() if str(x).strip() and str(x).strip().lower() not in {"nan", "none"}]
+        if numeric:
+            vals = [normalize_numeric_string(v) for v in vals]
+        vals = sorted(set(vals), key=_district_sort_key if numeric else lambda x: x)
+        return vals
+
+    c1, c2, c3 = st.columns(3)
+    selected_county = ""
+    selected_muni = ""
+    selected_precinct = ""
+    selected_district = ""
+    profile_df = pd.DataFrame()
+    title = ""
+
+    if area_level in ["County", "Municipality", "Precinct"]:
+        counties = _clean_options(area_df["County"])
+        with c1:
+            selected_county = st.selectbox("County", counties, key="ai_county") if counties else ""
+
+        county_df = area_df[area_df["County"] == selected_county].copy() if selected_county else area_df.copy()
+        municipalities = _clean_options(county_df["Municipality"])
+        if area_level in ["Municipality", "Precinct"]:
+            with c2:
+                selected_muni = st.selectbox("Municipality", municipalities, key="ai_municipality") if municipalities else ""
+        else:
+            with c2:
+                st.caption("Municipality not needed for county report")
+
+        muni_df = county_df[county_df["Municipality"] == selected_muni].copy() if selected_muni else county_df.copy()
+        precincts = _clean_options(muni_df["Precinct"])
+        if area_level == "Precinct":
+            with c3:
+                selected_precinct = st.selectbox("Precinct", precincts, key="ai_precinct") if precincts else ""
+        else:
+            with c3:
+                st.caption("Precinct not needed for this report level")
+
+        if area_level == "County":
+            profile_df = county_df.copy()
+            title = f"{selected_county} County"
+        elif area_level == "Municipality":
+            profile_df = muni_df.copy() if selected_muni else pd.DataFrame()
+            title = f"{selected_muni} • {selected_county}"
+        else:
+            profile_df = muni_df[muni_df["Precinct"] == selected_precinct].copy() if selected_precinct else pd.DataFrame()
+            title = f"{selected_precinct} • {selected_muni} • {selected_county}"
+
+    else:
+        district_col = area_level
+        numeric_district = area_level in ["USC", "STS", "STH"]
+        district_options = _clean_options(area_df[district_col], numeric=numeric_district)
+        with c1:
+            selected_district = st.selectbox(area_level, district_options, key=f"ai_district_{area_level}") if district_options else ""
+
+        if selected_district:
+            compare_series = area_df[district_col].astype(str).map(normalize_numeric_string if numeric_district else lambda x: str(x).strip())
+            district_df = area_df[compare_series == selected_district].copy()
+        else:
+            district_df = pd.DataFrame()
+
+        county_options = ["All Counties"] + _clean_options(district_df["County"] if not district_df.empty else area_df["County"])
+        with c2:
+            selected_county_filter = st.selectbox("County Filter", county_options, key=f"ai_county_filter_{area_level}") if county_options else "All Counties"
+        if selected_county_filter and selected_county_filter != "All Counties" and not district_df.empty:
+            district_df = district_df[district_df["County"] == selected_county_filter].copy()
+        with c3:
+            st.caption("Municipality/precinct are included in the breakdown below")
+
+        profile_df = district_df.copy()
+        title = f"{area_level} {selected_district}"
+        if selected_county_filter and selected_county_filter != "All Counties":
+            title += f" • {selected_county_filter} County"
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if profile_df.empty:
+        st.warning("No Area Intelligence data found for this selection.")
+        return
+
+    row = _aggregate_area_profile(profile_df)
+    total = _area_num(row, "Total_Voters", 0)
+    dem = _area_num(row, "Dem_Voters", 0)
+    rep = _area_num(row, "Rep_Voters", 0)
+    other = _area_num(row, "Other_Voters", 0)
+    male = _area_num(row, "Male_Voters", 0)
+    female = _area_num(row, "Female_Voters", 0)
+    unknown_gender = _area_num(row, "Unknown_Gender", 0)
+    avg_age = _area_num(row, "Avg_Age", 0)
+    new_reg = _area_num(row, "New_Registrations", 0)
+    mail_apps_total = _area_num(row, "Mail_Applications_Total", _area_num(row, "Mail_Applications", 0))
+    mail_apps_approved = _area_num(row, "Mail_Applications_Approved", _area_num(row, "Mail_Applications", 0))
+    mail_apps_declined = _area_num(row, "Mail_Applications_Declined", 0)
+    mail_sent = _area_num(row, "Mail_Ballots_Sent", 0)
+    mail_returned = _area_num(row, "Mail_Ballots_Returned", 0)
+    if mail_returned == 0:
+        mail_returned = _area_num(row, "Mail_Voters", 0)
+    mail_outstanding = _area_num(row, "Mail_Ballots_Outstanding", max(mail_apps_approved - mail_returned, 0))
+
+    # Safety repair for older precinct_summary.csv files or source rows where application status
+    # is missing but sent/outstanding/returned counts prove an approved application exists.
+    inferred_approved = max(mail_apps_approved, mail_outstanding + mail_returned, mail_sent, mail_returned)
+    if inferred_approved > mail_apps_approved:
+        mail_apps_approved = inferred_approved
+    inferred_total = mail_apps_approved + mail_apps_declined
+    if inferred_total > mail_apps_total:
+        mail_apps_total = inferred_total
+    mail_outstanding = max(mail_apps_approved - mail_returned, 0)
+
+    # Backward-compatible name used by existing strategy logic: approved applications.
+    mail_apps = mail_apps_approved
+    geo_issues = _area_num(row, "Geo_Issue_Rows", 0)
+    precinct_count = int(_area_num(row, "Precinct_Count", len(profile_df)))
+
+    def pct_val(n, denom=None):
+        denom = total if denom is None else denom
+        return 0 if float(denom or 0) <= 0 else (float(n or 0) / float(denom)) * 100
+    def pct_txt(n, denom=None):
+        return fmt_pct(pct_val(n, denom))
+
+    mail_return_rate = pct_val(mail_returned, mail_apps)
+    mail_outstanding_rate = pct_val(mail_outstanding, mail_apps)
+    badges, strategy_notes, _, _, _ = _build_strategy_summary(
+        total, dem, rep, other, new_reg, mail_apps, mail_returned, mail_outstanding, geo_issues
+    )
+
+    st.markdown(f'<div class="section-card"><div class="small-header">{area_level} Profile</div><div class="tiny-muted">{title} &nbsp;•&nbsp; {precinct_count:,} precinct row(s) included</div></div>', unsafe_allow_html=True)
+
+    # Cleaner top snapshot: one compact row for voter universe and party split.
+    top_cols = st.columns(5, gap="small")
+    top_cards = [
+        ("Total Voters", f"{int(total):,}", "profile universe"),
+        ("Democratic", f"{int(dem):,}", pct_txt(dem)),
+        ("Republican", f"{int(rep):,}", pct_txt(rep)),
+        ("Other / Unaffiliated", f"{int(other):,}", pct_txt(other)),
+        ("Average Age", f"{avg_age:.1f}" if avg_age else "—", "weighted" if area_level != "Precinct" else ""),
+    ]
+    for col, (label, value, note) in zip(top_cols, top_cards):
+        with col:
+            st.markdown(_metric_html(label, value, note), unsafe_allow_html=True)
+
+    with st.expander("More profile details", expanded=False):
+        detail_cols = st.columns(4, gap="small")
+        more_cards = [
+            ("Male", f"{int(male):,}", pct_txt(male)),
+            ("Female", f"{int(female):,}", pct_txt(female)),
+            ("Unknown Gender", f"{int(unknown_gender):,}", pct_txt(unknown_gender)),
+            ("New Registrations", f"{int(new_reg):,}", pct_txt(new_reg)),
+        ]
+        for col, (label, value, note) in zip(detail_cols, more_cards):
+            with col:
+                st.markdown(_metric_html(label, value, note), unsafe_allow_html=True)
+
+    # Mail Program: compact table plus two decision cards.
+    st.markdown('<div class="section-card"><div class="small-header">Mail Program</div><div class="tiny-muted">Approved/declined applications, sent ballots, returned ballots, and chase universe.</div></div>', unsafe_allow_html=True)
+    mail_left, mail_right = st.columns([2, 1], gap="medium")
+    with mail_left:
+        mail_df = pd.DataFrame({
+            "Stage": ["Applications Total", "Applications Approved", "Applications Declined", "Ballots Sent", "Ballots Returned", "Outstanding Ballots"],
+            "Voters": [int(mail_apps_total), int(mail_apps_approved), int(mail_apps_declined), int(mail_sent), int(mail_returned), int(mail_outstanding)],
+            "% of Voters": [pct_txt(mail_apps_total), pct_txt(mail_apps_approved), pct_txt(mail_apps_declined), pct_txt(mail_sent), pct_txt(mail_returned), pct_txt(mail_outstanding)],
+            "% of Approved": ["—", "100%" if mail_apps_approved else "—", "—", pct_txt(mail_sent, mail_apps_approved) if mail_apps_approved else "—", pct_txt(mail_returned, mail_apps_approved) if mail_apps_approved else "—", pct_txt(mail_outstanding, mail_apps_approved) if mail_apps_approved else "—"],
+        })
+        _ai_render_table(mail_df, height=240, sticky_cols=["Stage"], key="mail")
+    with mail_right:
+        st.markdown(_metric_html("Outstanding Ballots", f"{int(mail_outstanding):,}", f"{mail_outstanding_rate:.1f}% of approved applications" if mail_apps else "No chase universe visible"), unsafe_allow_html=True)
+        st.markdown(_metric_html("Return Rate", f"{mail_return_rate:.1f}%" if mail_apps else "—", "Returned / Approved"), unsafe_allow_html=True)
+
+    # Strategy Summary gets a visual block and stays above charts.
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="small-header">Strategy Summary</div>', unsafe_allow_html=True)
+    st.markdown("".join(_strategy_badge(text, tone) for text, tone in badges), unsafe_allow_html=True)
+    if strategy_notes:
+        st.markdown("<ul>" + "".join(f"<li>{note}</li>" for note in strategy_notes[:4]) + "</ul>", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    chart_tab, breakdown_tab, debug_tab = st.tabs(["Charts", "Area Breakdown", "Debug"])
+
+    with chart_tab:
+        chart_col1, chart_col2 = st.columns(2, gap="medium")
+        with chart_col1:
+            st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+            st.markdown('<div class="small-header">Party Breakdown</div>', unsafe_allow_html=True)
+            party_chart = pd.DataFrame({"Party": ["Democratic", "Republican", "Other"], "Voters": [dem, rep, other]})
+            party_chart["Voters"] = pd.to_numeric(party_chart["Voters"], errors="coerce").fillna(0)
+            party_chart["Percent"] = party_chart["Voters"].apply(lambda x: pct_val(x))
+            party_colors = ["#1565c0", "#c62828", "#2e7d32"]
+            if party_chart["Voters"].sum() > 0:
+                chart = alt.Chart(party_chart).mark_arc(innerRadius=62, outerRadius=98).encode(
+                    theta=alt.Theta(field="Voters", type="quantitative"),
+                    color=alt.Color(field="Party", type="nominal", scale=alt.Scale(domain=party_chart["Party"].tolist(), range=party_colors), legend=alt.Legend(title="Party")),
+                    tooltip=[alt.Tooltip("Party:N"), alt.Tooltip("Voters:Q", format=","), alt.Tooltip("Percent:Q", format=".1f", title="Percent")],
+                ).properties(height=265)
+                st.altair_chart(chart, use_container_width=True)
+                st.markdown(make_summary_table(party_chart, "Party", "Voters", party_colors), unsafe_allow_html=True)
+            else:
+                st.caption("No party data available.")
+            st.markdown('</div>', unsafe_allow_html=True)
+        with chart_col2:
+            st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+            st.markdown('<div class="small-header">Gender Breakdown</div>', unsafe_allow_html=True)
+            gender_chart = pd.DataFrame({"Gender": ["Male", "Female", "Unknown"], "Voters": [male, female, unknown_gender]})
+            gender_chart["Voters"] = pd.to_numeric(gender_chart["Voters"], errors="coerce").fillna(0)
+            gender_chart["Percent"] = gender_chart["Voters"].apply(lambda x: pct_val(x))
+            gender_colors = ["#4b4f54", "#b98088", "#9b9da1"]
+            if gender_chart["Voters"].sum() > 0:
+                chart = alt.Chart(gender_chart).mark_arc(innerRadius=62, outerRadius=98).encode(
+                    theta=alt.Theta(field="Voters", type="quantitative"),
+                    color=alt.Color(field="Gender", type="nominal", scale=alt.Scale(domain=gender_chart["Gender"].tolist(), range=gender_colors), legend=alt.Legend(title="Gender")),
+                    tooltip=[alt.Tooltip("Gender:N"), alt.Tooltip("Voters:Q", format=","), alt.Tooltip("Percent:Q", format=".1f", title="Percent")],
+                ).properties(height=265)
+                st.altair_chart(chart, use_container_width=True)
+                st.markdown(make_summary_table(gender_chart, "Gender", "Voters", gender_colors), unsafe_allow_html=True)
+            else:
+                st.caption("No gender data available.")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    # Prepare breakdown once and display in breakdown tab.
+    breakdown_df = profile_df.copy()
+    for col in ["Total_Voters", "Dem_Voters", "Rep_Voters", "Other_Voters", "Male_Voters", "Female_Voters", "Unknown_Gender", "New_Registrations", "Mail_Applications", "Mail_Applications_Total", "Mail_Applications_Approved", "Mail_Applications_Declined", "Mail_Ballots_Sent", "Mail_Ballots_Returned", "Mail_Ballots_Outstanding", "Mail_Voters", "Geo_Issue_Rows", "Avg_Age"]:
+        if col in breakdown_df.columns:
+            breakdown_df[col] = pd.to_numeric(breakdown_df[col], errors="coerce").fillna(0)
+        else:
+            breakdown_df[col] = 0
+    breakdown_df["Mail_Ballots_Returned"] = breakdown_df["Mail_Ballots_Returned"].where(breakdown_df["Mail_Ballots_Returned"] > 0, breakdown_df["Mail_Voters"])
+
+    if area_level == "County":
+        with breakdown_tab:
+            breakdown_mode = st.radio("Breakdown View", ["By Municipality", "By Precinct"], horizontal=True, key="ai_county_breakdown_mode")
+        group_cols = ["County", "Municipality"] if breakdown_mode == "By Municipality" else ["County", "Municipality", "Precinct"]
+    elif area_level == "Municipality":
+        group_cols = ["County", "Municipality", "Precinct"]
+    elif area_level == "Precinct":
+        group_cols = ["County", "Municipality", "Precinct"]
+    else:
+        with breakdown_tab:
+            breakdown_mode = st.radio("Breakdown View", ["By County", "By Municipality", "By Precinct"], horizontal=True, key=f"ai_district_breakdown_mode_{area_level}")
+        if breakdown_mode == "By County":
+            group_cols = [area_level, "County"]
+        elif breakdown_mode == "By Municipality":
+            group_cols = [area_level, "County", "Municipality"]
+        else:
+            group_cols = [area_level, "County", "Municipality", "Precinct"]
+
+    display_df = (
+        breakdown_df.groupby(group_cols, dropna=False)
+        .agg(
+            Total_Voters=("Total_Voters", "sum"),
+            Dem_Voters=("Dem_Voters", "sum"),
+            Rep_Voters=("Rep_Voters", "sum"),
+            Other_Voters=("Other_Voters", "sum"),
+            New_Registrations=("New_Registrations", "sum"),
+            Mail_Applications=("Mail_Applications", "sum"),
+            Mail_Applications_Total=("Mail_Applications_Total", "sum"),
+            Mail_Applications_Approved=("Mail_Applications_Approved", "sum"),
+            Mail_Applications_Declined=("Mail_Applications_Declined", "sum"),
+            Mail_Ballots_Sent=("Mail_Ballots_Sent", "sum"),
+            Mail_Ballots_Returned=("Mail_Ballots_Returned", "sum"),
+            Mail_Ballots_Outstanding=("Mail_Ballots_Outstanding", "sum"),
+            Geo_Issue_Rows=("Geo_Issue_Rows", "sum"),
+        )
+        .reset_index()
+    )
+    weighted_age = (
+        breakdown_df.assign(_AgeWeight=breakdown_df["Avg_Age"] * breakdown_df["Total_Voters"])
+        .groupby(group_cols, dropna=False)
+        .agg(_AgeWeight=("_AgeWeight", "sum"), _AgeTotal=("Total_Voters", "sum"))
+        .reset_index()
+    )
+    weighted_age["Avg_Age"] = weighted_age.apply(lambda r: 0 if r["_AgeTotal"] <= 0 else round(float(r["_AgeWeight"] / r["_AgeTotal"]), 1), axis=1)
+    display_df = display_df.merge(weighted_age[group_cols + ["Avg_Age"]], on=group_cols, how="left")
+    for col in ["Total_Voters", "Dem_Voters", "Rep_Voters", "Other_Voters", "New_Registrations", "Mail_Applications", "Mail_Applications_Total", "Mail_Applications_Approved", "Mail_Applications_Declined", "Mail_Ballots_Sent", "Mail_Ballots_Returned", "Mail_Ballots_Outstanding", "Geo_Issue_Rows"]:
+        display_df[col] = pd.to_numeric(display_df[col], errors="coerce").fillna(0).astype(int)
+    display_df["Dem_%"] = display_df.apply(lambda r: 0 if r["Total_Voters"] <= 0 else round((r["Dem_Voters"] / r["Total_Voters"]) * 100, 1), axis=1)
+    display_df["Rep_%"] = display_df.apply(lambda r: 0 if r["Total_Voters"] <= 0 else round((r["Rep_Voters"] / r["Total_Voters"]) * 100, 1), axis=1)
+    display_df["Other_%"] = display_df.apply(lambda r: 0 if r["Total_Voters"] <= 0 else round((r["Other_Voters"] / r["Total_Voters"]) * 100, 1), axis=1)
+    display_df["Mail_Return_%"] = display_df.apply(lambda r: 0 if r["Mail_Applications_Approved"] <= 0 else round((r["Mail_Ballots_Returned"] / r["Mail_Applications_Approved"]) * 100, 1), axis=1)
+    display_df["Outstanding_%"] = display_df.apply(lambda r: 0 if r["Mail_Applications_Approved"] <= 0 else round((r["Mail_Ballots_Outstanding"] / r["Mail_Applications_Approved"]) * 100, 1), axis=1)
+    display_df = display_df.sort_values("Total_Voters", ascending=False).reset_index(drop=True)
+
+    with breakdown_tab:
+        st.markdown('<div class="section-card"><div class="small-header">Area Breakdown</div><div class="tiny-muted">Summarized areas included in this profile.</div></div>', unsafe_allow_html=True)
+        _ai_render_table(display_df, height=420, sticky_cols=["USC", "STS", "STH", "School District", "County", "Municipality", "Precinct"], key="breakdown")
+
+    with debug_tab:
+        st.caption("Raw precinct_summary.csv source rows for troubleshooting.")
+        _ai_render_table(profile_df, height=420, sticky_cols=["USC", "STS", "STH", "School District", "County", "Municipality", "Precinct"], key="debug")
+
+
 if "data_loaded" not in st.session_state:
     st.session_state.data_loaded = False
 if "filters_applied" not in st.session_state:
@@ -4180,7 +4735,8 @@ if "lookup_query_input" not in st.session_state:
     st.session_state.lookup_query_input = st.session_state.get("lookup_query", "")
 
 with st.sidebar:
-    st.header("Candidate Connect")
+    st.header("Candidate Connect DEV")
+    st.warning("DEV VERSION - testing only")
     st.markdown('<div class="sidebar-note">Load voter data first, then open Create Universe or Voter Lookup below.</div>', unsafe_allow_html=True)
 
     if not st.session_state.data_loaded:
@@ -4439,6 +4995,13 @@ with st.sidebar:
 
         render_lookup_sidebar(st.session_state.active_filters, cols)
 
+        with st.expander("Area Intelligence", expanded=st.session_state.get("workspace_mode") == "area_intelligence"):
+            if st.button("Show Area Intelligence", use_container_width=True, key="show_area_intelligence_workspace"):
+                st.session_state.workspace_mode = "area_intelligence"
+                st.session_state.lookup_view_active = False
+                st.rerun()
+            st.caption("Precinct profile, summary metrics, and strategy foundation.")
+
 if not st.session_state.data_loaded:
     st.markdown('<div class="section-card empty-shell"><div class="small-header">Ready to load</div><div class="tiny-muted">Click <strong>Load Voter Data</strong> in the sidebar to open the R2 index shards with DuckDB.</div></div>', unsafe_allow_html=True)
     st.stop()
@@ -4452,6 +5015,8 @@ if workspace_mode == "lookup":
         render_voter_lookup_results()
     else:
         render_lookup_empty_workspace()
+elif workspace_mode == "area_intelligence":
+    render_area_intelligence_workspace()
 else:
     if not st.session_state.filters_applied:
         st.markdown('<div class="section-card empty-shell"><div class="small-header">Create Universe</div><div class="tiny-muted">Choose your filters in the left menu and click <strong>Apply Filters</strong> to run counts and charts.</div></div>', unsafe_allow_html=True)
