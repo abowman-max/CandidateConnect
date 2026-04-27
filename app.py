@@ -4177,16 +4177,27 @@ def render_lookup_sidebar(active_filters, columns):
 # -----------------------------
 @st.cache_data(show_spinner=False)
 def load_area_precinct_summary() -> pd.DataFrame:
-    """Load the Area Intelligence precinct summary.
+    """Load Area Intelligence summary from authenticated R2 first, then local fallback.
 
-    DEV-safe version: load the local repo copy first.
-    This avoids Cloudflare R2 public-read/403 issues for the Area Intelligence CSV.
-    If no local copy exists, it will still try the R2 public URL as a backup.
+    This avoids the earlier Cloudflare public-read/403 issue because the app reads
+    area_intelligence/precinct_summary.csv through the R2 S3 API using Streamlit secrets.
     """
+    key = "area_intelligence/precinct_summary.csv"
     local_path = Path("area_intelligence") / "precinct_summary.csv"
     errors = []
 
-    # 1) Preferred for DEV: local file committed/uploaded with the app repo.
+    # 1) Preferred: authenticated R2 read from the current environment bucket.
+    try:
+        client, info = get_saved_universes_r2_client()
+        if client is not None:
+            obj = client.get_object(Bucket=info["bucket"], Key=key)
+            payload = obj["Body"].read()
+            return pd.read_csv(BytesIO(payload), dtype=str).fillna("")
+        errors.append("Authenticated R2 not configured")
+    except Exception as e:
+        errors.append(f"Authenticated R2: {e}")
+
+    # 2) Fallback: local GitHub/repo file, useful if R2 credentials are missing.
     try:
         if local_path.exists():
             return pd.read_csv(local_path, dtype=str).fillna("")
@@ -4194,16 +4205,15 @@ def load_area_precinct_summary() -> pd.DataFrame:
     except Exception as e:
         errors.append(f"Local: {e}")
 
-    # 2) Backup: R2 public URL.
+    # 3) Last resort: public R2 URL, if the object happens to be public.
     try:
-        url = r2_public_url("area_intelligence/precinct_summary.csv")
+        url = r2_public_url(key)
         return pd.read_csv(url, dtype=str).fillna("")
     except Exception as e:
-        errors.append(f"R2: {e}")
+        errors.append(f"Public R2: {e}")
 
     raise FileNotFoundError(
-        "Could not load area_intelligence/precinct_summary.csv. "
-        "Put precinct_summary.csv in the app folder under area_intelligence/. "
+        "Could not load area_intelligence/precinct_summary.csv from authenticated R2, local fallback, or public R2. "
         + " | ".join(errors)
     )
 
