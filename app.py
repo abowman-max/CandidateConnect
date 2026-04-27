@@ -4419,57 +4419,113 @@ def render_area_intelligence_workspace():
         _ai_render_table(pd.DataFrame({"Available Columns": list(area_df.columns)}), height=300, sticky_cols=["Available Columns"], key="missingcols")
         return
 
-    for col in required_cols:
-        area_df[col] = area_df[col].astype(str).fillna("").replace({"nan": ""})
+    # Normalize Area Intelligence geography fields. District columns are optional,
+    # but when present they power district-level reports.
+    for col in ["County", "Municipality", "Precinct", "USC", "STS", "STH", "School District"]:
+        if col not in area_df.columns:
+            area_df[col] = ""
+        area_df[col] = area_df[col].astype(str).fillna("").replace({"nan": "", "None": ""}).str.strip()
+        if col in ["USC", "STS", "STH"]:
+            area_df[col] = area_df[col].map(normalize_numeric_string)
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="small-header">Select Area</div>', unsafe_allow_html=True)
 
+    available_levels = ["County", "Municipality", "Precinct"]
+    for _lvl in ["USC", "STS", "STH", "School District"]:
+        if _lvl in area_df.columns and any(str(x).strip() for x in area_df[_lvl].unique().tolist()):
+            available_levels.append(_lvl)
+
     area_level = st.selectbox(
         "Report Level",
-        ["County", "Municipality", "Precinct"],
-        index=2,
+        available_levels,
+        index=available_levels.index("Precinct") if "Precinct" in available_levels else 0,
         key="ai_area_level",
-        help="Choose whether this profile should summarize an entire county, one municipality, or a single precinct."
+        help="Choose whether this profile should summarize a county, municipality, precinct, or district."
     )
 
+    def _district_sort_key(v):
+        text = normalize_numeric_string(v)
+        try:
+            return (0, int(float(text)), text)
+        except Exception:
+            return (1, text)
+
+    def _clean_options(series, numeric=False):
+        vals = [str(x).strip() for x in series.dropna().astype(str).tolist() if str(x).strip() and str(x).strip().lower() not in {"nan", "none"}]
+        if numeric:
+            vals = [normalize_numeric_string(v) for v in vals]
+        vals = sorted(set(vals), key=_district_sort_key if numeric else lambda x: x)
+        return vals
+
     c1, c2, c3 = st.columns(3)
-    counties = sorted([x for x in area_df["County"].unique().tolist() if str(x).strip()])
-    with c1:
-        selected_county = st.selectbox("County", counties, key="ai_county") if counties else ""
-
-    county_df = area_df[area_df["County"] == selected_county].copy() if selected_county else area_df.copy()
-
+    selected_county = ""
     selected_muni = ""
     selected_precinct = ""
-    municipalities = sorted([x for x in county_df["Municipality"].unique().tolist() if str(x).strip()])
-    if area_level in ["Municipality", "Precinct"]:
-        with c2:
-            selected_muni = st.selectbox("Municipality", municipalities, key="ai_municipality") if municipalities else ""
-    else:
-        with c2:
-            st.caption("Municipality not needed for county report")
+    selected_district = ""
+    profile_df = pd.DataFrame()
+    title = ""
 
-    muni_df = county_df[county_df["Municipality"] == selected_muni].copy() if selected_muni else county_df.copy()
+    if area_level in ["County", "Municipality", "Precinct"]:
+        counties = _clean_options(area_df["County"])
+        with c1:
+            selected_county = st.selectbox("County", counties, key="ai_county") if counties else ""
 
-    precincts = sorted([x for x in muni_df["Precinct"].unique().tolist() if str(x).strip()])
-    if area_level == "Precinct":
-        with c3:
-            selected_precinct = st.selectbox("Precinct", precincts, key="ai_precinct") if precincts else ""
+        county_df = area_df[area_df["County"] == selected_county].copy() if selected_county else area_df.copy()
+        municipalities = _clean_options(county_df["Municipality"])
+        if area_level in ["Municipality", "Precinct"]:
+            with c2:
+                selected_muni = st.selectbox("Municipality", municipalities, key="ai_municipality") if municipalities else ""
+        else:
+            with c2:
+                st.caption("Municipality not needed for county report")
+
+        muni_df = county_df[county_df["Municipality"] == selected_muni].copy() if selected_muni else county_df.copy()
+        precincts = _clean_options(muni_df["Precinct"])
+        if area_level == "Precinct":
+            with c3:
+                selected_precinct = st.selectbox("Precinct", precincts, key="ai_precinct") if precincts else ""
+        else:
+            with c3:
+                st.caption("Precinct not needed for this report level")
+
+        if area_level == "County":
+            profile_df = county_df.copy()
+            title = f"{selected_county} County"
+        elif area_level == "Municipality":
+            profile_df = muni_df.copy() if selected_muni else pd.DataFrame()
+            title = f"{selected_muni} • {selected_county}"
+        else:
+            profile_df = muni_df[muni_df["Precinct"] == selected_precinct].copy() if selected_precinct else pd.DataFrame()
+            title = f"{selected_precinct} • {selected_muni} • {selected_county}"
+
     else:
+        district_col = area_level
+        numeric_district = area_level in ["USC", "STS", "STH"]
+        district_options = _clean_options(area_df[district_col], numeric=numeric_district)
+        with c1:
+            selected_district = st.selectbox(area_level, district_options, key=f"ai_district_{area_level}") if district_options else ""
+
+        if selected_district:
+            compare_series = area_df[district_col].astype(str).map(normalize_numeric_string if numeric_district else lambda x: str(x).strip())
+            district_df = area_df[compare_series == selected_district].copy()
+        else:
+            district_df = pd.DataFrame()
+
+        county_options = ["All Counties"] + _clean_options(district_df["County"] if not district_df.empty else area_df["County"])
+        with c2:
+            selected_county_filter = st.selectbox("County Filter", county_options, key=f"ai_county_filter_{area_level}") if county_options else "All Counties"
+        if selected_county_filter and selected_county_filter != "All Counties" and not district_df.empty:
+            district_df = district_df[district_df["County"] == selected_county_filter].copy()
         with c3:
-            st.caption("Precinct not needed for this report level")
+            st.caption("Municipality/precinct are included in the breakdown below")
+
+        profile_df = district_df.copy()
+        title = f"{area_level} {selected_district}"
+        if selected_county_filter and selected_county_filter != "All Counties":
+            title += f" • {selected_county_filter} County"
+
     st.markdown('</div>', unsafe_allow_html=True)
-
-    if area_level == "County":
-        profile_df = county_df.copy()
-        title = f"{selected_county} County"
-    elif area_level == "Municipality":
-        profile_df = muni_df.copy() if selected_muni else pd.DataFrame()
-        title = f"{selected_muni} • {selected_county}"
-    else:
-        profile_df = muni_df[muni_df["Precinct"] == selected_precinct].copy() if selected_precinct else pd.DataFrame()
-        title = f"{selected_precinct} • {selected_muni} • {selected_county}"
 
     if profile_df.empty:
         st.warning("No Area Intelligence data found for this selection.")
@@ -4627,8 +4683,17 @@ def render_area_intelligence_workspace():
         group_cols = ["County", "Municipality"] if breakdown_mode == "By Municipality" else ["County", "Municipality", "Precinct"]
     elif area_level == "Municipality":
         group_cols = ["County", "Municipality", "Precinct"]
-    else:
+    elif area_level == "Precinct":
         group_cols = ["County", "Municipality", "Precinct"]
+    else:
+        with breakdown_tab:
+            breakdown_mode = st.radio("Breakdown View", ["By County", "By Municipality", "By Precinct"], horizontal=True, key=f"ai_district_breakdown_mode_{area_level}")
+        if breakdown_mode == "By County":
+            group_cols = [area_level, "County"]
+        elif breakdown_mode == "By Municipality":
+            group_cols = [area_level, "County", "Municipality"]
+        else:
+            group_cols = [area_level, "County", "Municipality", "Precinct"]
 
     display_df = (
         breakdown_df.groupby(group_cols, dropna=False)
@@ -4668,11 +4733,11 @@ def render_area_intelligence_workspace():
 
     with breakdown_tab:
         st.markdown('<div class="section-card"><div class="small-header">Area Breakdown</div><div class="tiny-muted">Summarized areas included in this profile.</div></div>', unsafe_allow_html=True)
-        _ai_render_table(display_df, height=420, sticky_cols=["County", "Municipality", "Precinct"], key="breakdown")
+        _ai_render_table(display_df, height=420, sticky_cols=["USC", "STS", "STH", "School District", "County", "Municipality", "Precinct"], key="breakdown")
 
     with debug_tab:
         st.caption("Raw precinct_summary.csv source rows for troubleshooting.")
-        _ai_render_table(profile_df, height=420, sticky_cols=["County", "Municipality", "Precinct"], key="debug")
+        _ai_render_table(profile_df, height=420, sticky_cols=["USC", "STS", "STH", "School District", "County", "Municipality", "Precinct"], key="debug")
 
 
 if "data_loaded" not in st.session_state:
